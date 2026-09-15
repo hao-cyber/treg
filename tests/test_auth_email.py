@@ -19,7 +19,7 @@ async def client():
     await reset_db()
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://registry",
-        headers={"ngrok-skip-browser-warning": "1"},
+        headers={"ngrok-skip-browser-warning": "1", "X-Treg-Key-Protocol": "1"},
     ) as c:
         yield c
 

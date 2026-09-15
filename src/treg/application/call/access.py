@@ -16,6 +16,7 @@ from ...domain.connections import authorization as connection_authorization
 from ...domain.identity.access import Caller
 from .resolve import (
     _authorization_method,
+    _anonymous_offer,
     _enforce_catalog_status,
     _marketplace_secret,
     _platform_estimate_micro,
@@ -105,6 +106,16 @@ async def catalog_endpoint_access(
         if direct is not None:
             return direct
 
+    anonymous = _anonymous_offer(endpoint, caller.org)
+    if anonymous is not None:
+        return {
+            "tier": "anonymous",
+            "metered": False,
+            "detail": "no provider key needed — the verified public upstream route is free",
+            "estimated_cost_micro": 0,
+            "estimated_cost_usd": 0,
+        }
+
     cost = _platform_offer(endpoint, provider, caller.org)
     if cost is not None:
         # The number is the honest per-call price at the DEFAULT page size — a `per_result`
@@ -156,6 +167,7 @@ async def _routed_access(endpoint: dict, caller: Caller, catalog) -> dict:
     how = (
         "your registered tool" if first.tier == "tool" else
         "your own credential" if first.tier == "credential" else
+        "a verified public upstream route, no provider key" if first.tier == "anonymous" else
         f"treg's {first.endpoint['provider']} key, ~${(first.price_micro or 0) / 1e6:g}"
     )
     dropped_note = ""

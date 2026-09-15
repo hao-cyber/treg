@@ -252,9 +252,13 @@ _UNRECORDED_SIGNATURE = {
     "apify", "aviato", "branddev", "brightdata", "coingecko", "coresignal", "crustdata", "dataforseo",
     "diffbot", "exa", "fiber-ai", "finnhub", "icypeas", "justoneapi", "marketstack",
     "sumble",  # exhaustion not forced; no overflow route claimed
+    "harvestapi",  # wallet exhaustion unobserved; no overflow route
     "quickenrich",  # subscription exhaustion not observed; do not spend the trial to force it
     "millionverifier",  # funded-account exhaustion not observed; trial still has credits
+    # Bare 402 is already the generic balance signal; the real empty-Credits body was not forced.
+    "financialdatasets",
     "minimax", "oceanio", "openrouter", "replicate", "scrapecreators", "seranking",
+    "piapi",  # prepaid wallet exhaustion not observed ($50 funded 2026-09-14); no overflow route
 
     "serpapi", "serpstat", "spyfu", "tiingo", "tikhub", "tomba", "twelvedata",
 }

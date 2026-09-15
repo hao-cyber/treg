@@ -1593,6 +1593,12 @@ adapters:
     in_expr: {queryParams.ticker: "lower(symbol)"}
     out: {price: "[0].tngoLast", open: "[0].open", high: "[0].high", low: "[0].low", quote: "[0]"}
     miss: ". == []"
+  financialdatasets.prices.snapshot:
+    accepts: [[symbol]]
+    in: {symbol: queryParams.ticker}
+    in_expr: {queryParams.ticker: "upper(symbol)"}
+    out: {price: snapshot.price, quote: snapshot}
+    miss: "snapshot.price == null"
   eodhd.real-time:
     accepts: [[symbol]]
     in:  {}
@@ -2105,3 +2111,53 @@ adapters:
       location: "get(values(companies), '[0].headquarter')"
       linkedin_url: "get(values(companies), '[0].li_vanity')"
     miss: "at_least(status_code != 200, get(values(companies), '[0].name') == null)"
+
+  # HarvestAPI: native synchronous reads; billed misses still settle the reported cost.
+  harvestapi.linkedin.user.profile:
+    additional_capabilities: [people.enrich]
+    accepts: [[linkedin_handle]]
+    in: {linkedin_handle: queryParams.publicIdentifier}
+    out: {full_name: "join(element.firstName, element.lastName)", first_name: element.firstName,
+          last_name: element.lastName, headline: element.headline, location: element.location.linkedinText,
+          followers: element.followerCount, connections: element.connectionsCount, about: element.about,
+          linkedin_url: element.linkedinUrl}
+    miss: "element.id == null"
+  harvestapi.linkedin.user.profile.main:
+    accepts: [[linkedin_handle]]
+    in: {linkedin_handle: queryParams.publicIdentifier}
+    const: {queryParams.main: "true"}
+    out: {full_name: "join(element.firstName, element.lastName)", first_name: element.firstName,
+          last_name: element.lastName, headline: element.headline, location: element.location.linkedinText,
+          followers: element.followerCount, connections: element.connectionsCount, about: element.about,
+          linkedin_url: element.linkedinUrl}
+    miss: "element.id == null"
+  harvestapi.linkedin.user.profile.email:
+    accepts: [[linkedin_handle]]
+    in: {linkedin_handle: queryParams.publicIdentifier}
+    const: {queryParams.findEmail: "true"}
+    out: {email: "element.emails[0].email", confidence: "element.emails[0].qualityScore / 100",
+          first_name: element.firstName, last_name: element.lastName,
+          verified: "element.emails[0].status == 'valid'"}
+    miss: "element.emails[0].email == null"
+  harvestapi.linkedin.company.profile:
+    additional_capabilities: [companies.enrich]
+    accepts: [[linkedin_handle]]
+    in: {linkedin_handle: queryParams.universalName}
+    out: {name: element.name, description: element.description, website: element.website,
+          followers: element.followerCount, employees: element.employeeCount, linkedin_url: element.linkedinUrl}
+    miss: "element.id == null"
+  harvestapi.linkedin.post.get:
+    accepts: [[url]]
+    in: {url: queryParams.url}
+    out: {post: element, text: element.content, likes: element.engagement.likes, comments: element.engagement.comments}
+    miss: "element.id == null"
+  # Lead search is the only Harvest people search whose rows carry names and profile URLs:
+  # profile-search hides out-of-network members (no name, no URL), so it stays unrouted.
+  # $0.10 buys a fixed page of 25 rows, so the router prices every request as 25 units.
+  harvestapi.linkedin.leads.search:
+    accepts: [[company_domain, title], [company_domain], [title]]
+    in: {company_domain: queryParams.currentCompanies, title: queryParams.currentJobTitles}
+    in_expr: {queryParams.locations: "coalesce(location, country_name(country))", queryParams.search: "csv(keywords)"}
+    cost_units: "25"
+    out: {people: elements, count: pagination.totalElements}
+    miss: "coalesce(elements, []) == []"

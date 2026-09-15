@@ -54,8 +54,8 @@ class Candidate:
     endpoint: dict
     adapter: Adapter
     variant: tuple[str, ...]
-    tier: str                        # tool | credential | platform
-    price_micro: int | None          # this request, this org (0 on an own key)
+    tier: str                        # tool | credential | anonymous | platform
+    price_micro: int | None          # this request, this org (0 on an own key or anonymous route)
     hit_rate: float | None           # P(hit) when known (≥ MIN_HIT_SAMPLES), else None
     ok_rate: float | None
     p50_ms: int | None
@@ -66,7 +66,7 @@ class Candidate:
 
     @property
     def expected_cost_per_hit(self) -> float:
-        """price × P(billed) / P(hit). Own keys are free. Unknown rates read as 1.0 (low confidence)."""
+        """price × P(billed) / P(hit). Own keys and anonymous routes are free."""
         if self.price_micro is None:
             return float("inf")
         if self.tier != "platform":
@@ -126,7 +126,10 @@ def rank(candidates: list[Candidate], *, prefer: list[str] | None = None, exclud
     keep = [c for c in candidates if c.endpoint["provider"].lower() not in exclude and not c.exhausted]
 
     def key(c: Candidate):
-        own = 0 if c.tier != "platform" else 1
+        # A team's own credential is the first choice. An approved anonymous route comes next,
+        # before a paid platform-key call. Keep this explicit: treating every non-platform tier as
+        # "own" would let a future anonymous adapter compete at the team's credential priority.
+        tier = 0 if c.tier in ("tool", "credential") else 1 if c.tier == "anonymous" else 2
         pref = prefer.index(c.endpoint["provider"].lower()) if c.endpoint["provider"].lower() in prefer else len(prefer)
         # A provider that USES more of what the caller said answers the question asked: given
         # {company_domain, title}, a title-aware search outranks a cheaper domain-only one that
@@ -138,7 +141,7 @@ def rank(candidates: list[Candidate], *, prefer: list[str] | None = None, exclud
         # price alone (live 2026-08-29: `{q, title, location: London, country: GB}` went to the
         # cheapest candidate, which dropped both geo filters and returned people in Bengaluru and
         # San Francisco). It stays reachable, just last among equals.
-        return (own, pref, specificity, len(c.ignored), c.expected_cost_per_hit,
+        return (tier, pref, specificity, len(c.ignored), c.expected_cost_per_hit,
                 c.p50_ms if c.p50_ms is not None else 10**9,
                 c.last_ok_days if c.last_ok_days is not None else 10**6, c.endpoint["id"])
     return sorted(keep, key=key)

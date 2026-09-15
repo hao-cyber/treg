@@ -53,6 +53,9 @@ _TABLE: list[tuple[str, int, str, str]] = [
     # Documented 2026-09-08: discovery's allowance is distinct from the shared credit pool.
     # https://docs.influencers.club/guides/error-handling — ordinary burst 429s have Retry-After.
     ("influencersclub", 429, r"Discovery API credit limit reached", "quota"),
+    # reAPI: an empty prepaid balance is a 402 {"error": {"code": 30001, "message": "Insufficient
+    # credits. Required: 13856", ...}} (observed 2026-09-14 with a request larger than the balance).
+    ("reapi", 402, r"insufficient credits", "balance"),
     ("trykitt", 418, r"temporarily throttled", "burst"),
     ("trykitt", 402, r"insufficient (?:credits?|funds|balance)|out of credits", "balance"),
     # This API uses 402 for both funds and rate limits. The first matching row wins.
@@ -61,6 +64,12 @@ _TABLE: list[tuple[str, int, str, str]] = [
     # Independent pools: lock only the failed endpoint, never the entire provider.
     # https://api.contactout.com/#errors (checked 2026-09-08).
     ("contactout", 403, r"you're out of credits", "quota"),
+    # cloro: a spent credit allowance is a 403 ForbiddenError with `error.code: "INSUFFICIENT_CREDITS"`
+    # (OpenAPI 3.1 spec, 2026-09-07 — documented, not yet observed: the review account had 37,500
+    # credits). Its 429s are CONCURRENT_LIMIT_EXCEEDED / RATE_LIMIT_EXCEEDED bursts with
+    # X-RateLimit-* headers, never a period quota; the plan allowance resets monthly at
+    # `cycleResetsAt` from GET /v1/credits.
+    ("cloro", 403, r"insufficient_credits", "balance"),
     ("*", 402, r"", "balance"),
 ]
 

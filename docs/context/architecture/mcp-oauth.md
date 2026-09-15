@@ -7,6 +7,9 @@ sources:
   - src/treg/domain/identity/health.py
   - src/treg/domain/identity/mcp_oauth.py
   - src/treg/domain/identity/session.py
+  - src/treg/domain/identity/access.py
+  - src/treg/domain/identity/api_keys.py
+  - src/treg/routers/api_keys.py
   - src/treg/routers/auth.py
   - src/treg/web/claude-connector.html
   - src/treg/web/connect-demo.html
@@ -32,6 +35,19 @@ not an upstream call. It requires the existing transport identity and spends no 
 Both also expose `review(call_id, usefulness, reason?)` as a non-destructive, non-idempotent local
 write relayed to `/reviews`, using the shared usefulness enum and description.
 See [feedback](feedback.md) for invitation sampling and hint priority. V2 retains its catalog-only calling boundary.
+
+## Managed bearer keys
+
+Both `/mcp/` and `/mcp/v2/` accept an active managed key as a direct bearer. MCP tools pass that
+bearer to the normal API, so disable and revoke take effect on the next tool call. The transport can
+still list static tool schemas before it validates a non-OAuth bearer; this does not grant data or
+call access. A seven-day `scp=bootstrap` login token is not a team bearer and cannot call either MCP
+surface; `treg mcp install` rejects it before writing any client configuration. Use a team Default,
+Additional, or Agent key instead.
+
+MCP OAuth access and refresh tokens remain typed, short-lived bridge credentials with separate V1
+and V2 audiences. They do not resolve through an `ApiKey` row and do not use a default-key control.
+This keeps OAuth refresh and audience isolation unchanged.
 
 ## Provider authorization remediation
 
@@ -255,14 +271,14 @@ server's own outbound validation refuse the whole catalog entry.
 
 ## Responses are gzip-compressed at the origin — the edge must find nothing to do
 
-Production sits behind Render's managed edge — no account or dashboard of ours — which
-Brotli-compresses large responses on the way out. At least one real client stack (httpx +
+The hosted service sits behind a managed edge which can Brotli-compress large responses on the way
+out. At least one real client stack (httpx +
 brotlicffi, issue #93) dies mid-decode on that output and then hangs to its own timeout, minutes
 after the upstream answered in seconds.
 
 The first fix was `Cache-Control: no-store, no-transform` (the `NoTransformResponses` wrapper,
 outermost so 401 challenges carry it too) — the origin's standard "do not re-encode" (RFC 9111).
-**Render's edge ignores it** (issue #100: `content-encoding: br` arrived in production right next to
+**The managed edge ignores it** (issue #100: `content-encoding: br` arrived in production next to
 the header). The header stays because it is correct and free, but the working fix is different: the
 MCP app gzips its own responses (`GZipMiddleware` inside `build_mcp_app`, ≥1KB). An edge only
 compresses what arrives uncompressed — a response already carrying `Content-Encoding: gzip` passes
@@ -391,11 +407,9 @@ happened before the balances were added.
 
 ### …but the choice must stay visible and reversible afterwards
 
-Decided-once became **invisible and permanent**, and that combination cost a user real money
-(2026-08-17). `balance` reported the slug `superdesign-7`; `treg org ls` on their machine listed
-`superdesign` and `ai-jason` and nothing else, because the CLI was signed in as a *different account*
-from the one that had clicked Allow. Nothing in the agent could tell a plausible slug from the wrong
-team, and the first signal was spend on a balance nobody had opened. Two halves to the fix:
+Decided-once became **invisible and permanent**, and that combination caused spend against the wrong
+team when the CLI and OAuth client used different identities. Nothing in the agent could tell a
+plausible slug from the intended team. Two halves to the fix:
 
 - **`balance` and `my_tools` label the grant**: `team_name` (a slug alone cannot be sanity-checked)
   and `identity` — the account the grant belongs to, which is usually the half that differs. If the
@@ -522,6 +536,12 @@ which makes it look like a provider outage rather than a setup problem. The garb
 the test suite's own dummy: `install_mcp(only=[])` read an empty list as "no filter" and wrote
 `Bearer K` into the developer's real configs on every suite run — `only=[]` now means *none*, and
 the test isolates HOME.
+
+Before that verification, the installer also recognizes the signed `scp=bootstrap` hint and exits
+without writes. The server remains authoritative—the local decode grants nothing—but this gives a
+clear setup error instead of installing a credential that cannot identify a billing team. MCP OAuth
+access/refresh flows are unchanged; their internal 120-second bridge identity remains a separate
+typed path.
 
 Why a header works even though treg advertises OAuth: a client only falls back to OAuth discovery on
 a **401**, and treg returns **200** for a valid header — verified against Claude Code, which

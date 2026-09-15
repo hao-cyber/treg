@@ -1,6 +1,7 @@
 """Archive body I/O and upload scheduling, separate from archive indexing and TTL learning."""
 import asyncio
 from collections import Counter, OrderedDict
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 import logging
 import re
@@ -17,6 +18,10 @@ _pending_bytes = 0
 _sem = None
 _sem_loop = None
 _RECENT_UPLOADS = 20_000
+_RETRYABLE_FAILURES = frozenset({"timeout", "rate_limited", "upstream_error", "store_error"})
+_WRITE_ATTEMPT_MAX_S = 4.0
+_READ_ATTEMPTS = 2
+_READ_ATTEMPT_MAX_S = 1.0
 _uploaded: OrderedDict[str, None] = OrderedDict()
 _inflight: dict[str, asyncio.Future] = {}
 _queued_hashes: set[str] = set()
@@ -61,7 +66,34 @@ class StorageReport:
         self.call_ref, self.emit = call_ref, emit
         self.finished = False
         self.props = {"archive_body_upload_status": "not_requested", "archive_body_upload_ms": 0.0,
-                      "archive_body_queue_wait_ms": 0.0}
+                      "archive_body_queue_wait_ms": 0.0, "archive_body_upload_attempts": 0,
+                      "archive_body_upload_retry_reason": "none",
+                      "archive_body_upload_retry_recovered": False}
+        self.timings = dict.fromkeys(("compare_sem_wait", "compare", "record_key_wait",
+                                     "record_sem_wait", "record_db", "observe_sem_wait", "observe"))
+        self.failure_phase = None
+
+    @contextmanager
+    def measure(self, phase):
+        """Include interrupted work; an unentered phase stays unknown rather than zero."""
+        started = time.monotonic()
+        try:
+            yield
+        except BaseException:
+            self.failure_phase = phase
+            raise
+        finally:
+            self.timings[phase] = (time.monotonic() - started) * 1000
+
+    @asynccontextmanager
+    async def wait(self, gate, phase):
+        # Measure acquisition only, then retain the original lock/semaphore lifetime.
+        with self.measure(phase):
+            await gate.acquire()
+        try:
+            yield
+        finally:
+            gate.release()
 
     def finish(self, *, storage=None, reason=None):
         if self.finished:
@@ -72,7 +104,13 @@ class StorageReport:
                 "upload_status": self.props["archive_body_upload_status"],
                 "upload_ms": round(self.props["archive_body_upload_ms"], 3),
                 "queue_wait_ms": round(self.props["archive_body_queue_wait_ms"], 3),
+                "upload_attempts": self.props["archive_body_upload_attempts"],
+                "upload_retry_reason": self.props["archive_body_upload_retry_reason"],
+                "upload_retry_recovered": self.props["archive_body_upload_retry_recovered"],
                 "dropped": storage is None, "drop_reason": reason or "none"}
+        data.update({phase + "_ms": round(ms, 3) if ms is not None else None
+                     for phase, ms in self.timings.items()})
+        data["failure_phase"] = self.failure_phase
         if self.emit is not None:
             self.emit(data)
         elif self.call_ref:
@@ -125,36 +163,74 @@ async def prepare(body: bytes, content_hash: str, *, mode: str, observation: Sto
         try:
             error_type, attempt = "none", 0
             attempts = get_settings().archive_r2_terminal_attempts if terminal else 2
+            transfer_budget = get_settings().archive_r2_timeout_s
+            sem = _upload_sem()
             queued = time.monotonic()
-            async with _upload_sem():
-                observation.props["archive_body_queue_wait_ms"] += (time.monotonic() - queued) * 1000
-                transfer = time.monotonic()
+            await sem.acquire()
+            observation.props["archive_body_queue_wait_ms"] += (time.monotonic() - queued) * 1000
+            deadline = asyncio.get_running_loop().time() + transfer_budget
+            slot_acquired = True
+            retry_reason = "none"
+            while attempt < attempts:
+                if attempt:
+                    queued = time.monotonic()
+                    try:
+                        async with asyncio.timeout_at(deadline):
+                            await sem.acquire()
+                    except TimeoutError:
+                        observation.props["archive_body_queue_wait_ms"] += (
+                            time.monotonic() - queued) * 1000
+                        reason, error_type = "timeout", "TimeoutError"
+                        break
+                    observation.props["archive_body_queue_wait_ms"] += (
+                        time.monotonic() - queued) * 1000
+                    slot_acquired = True
                 try:
-                    # Attempts and jitter share the existing transfer timeout. Slot waiting stays
-                    # outside it. The terminal caller still has its original overall deadline.
-                    async with asyncio.timeout(get_settings().archive_r2_timeout_s):
-                        for attempt in range(1, attempts + 1):
-                            try:
-                                if _store is None:
-                                    raise ObjectStoreError("store_unavailable")
-                                info = await _store.put(body, content_hash=content_hash)
-                                if info != ObjectInfo(content_hash, len(body)):
-                                    raise ObjectStoreError("hash_mismatch")
-                                reason = None
-                                break
-                            except Exception as exc:
-                                reason, error_type = failure_reason(exc), exception_name(exc)
-                            transient = reason in {"rate_limited", "upstream_error"}
-                            if (attempt == attempts or (transient and attempt >= 2)
-                                    or (not transient and not terminal)):
-                                break
-                            delay = (random.uniform(1.0, 1.5) if transient
-                                     else min(0.1 * 2 ** (attempt - 1), 1.0))
-                            await asyncio.sleep(delay)
+                    attempt += 1
+                    observation.props["archive_body_upload_attempts"] = attempt
+                    transfer = time.monotonic()
+                    try:
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            raise TimeoutError
+                        attempt_timeout = min(_WRITE_ATTEMPT_MAX_S, transfer_budget * 0.4, remaining)
+                        async with asyncio.timeout(attempt_timeout):
+                            if _store is None:
+                                raise ObjectStoreError("store_unavailable")
+                            info = await _store.put(body, content_hash=content_hash)
+                            if info != ObjectInfo(content_hash, len(body)):
+                                raise ObjectStoreError("hash_mismatch")
+                        reason = None
+                    except Exception as exc:
+                        reason, error_type = failure_reason(exc), exception_name(exc)
+                    finally:
+                        observation.props["archive_body_upload_ms"] += (
+                            time.monotonic() - transfer) * 1000
+                finally:
+                    if slot_acquired:
+                        sem.release()
+                        slot_acquired = False
+                if reason is None or reason not in _RETRYABLE_FAILURES or attempt == attempts:
+                    break
+                if retry_reason == "none":
+                    retry_reason = reason
+                    observation.props["archive_body_upload_retry_reason"] = reason
+                outcomes["upload_retry_" + reason] += 1
+                delay = (random.uniform(1.0, 1.5) if reason in {"rate_limited", "upstream_error"}
+                         else random.uniform(0.05, 0.15))
+                delay_started = time.monotonic()
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        await asyncio.sleep(delay)
                 except TimeoutError:
                     reason, error_type = "timeout", "TimeoutError"
+                    break
                 finally:
-                    observation.props["archive_body_upload_ms"] += (time.monotonic() - transfer) * 1000
+                    observation.props["archive_body_upload_ms"] += (
+                        time.monotonic() - delay_started) * 1000
+            if reason is None and retry_reason != "none":
+                observation.props["archive_body_upload_retry_recovered"] = True
+                outcomes["upload_retry_recovered"] += 1
             if reason is not None:
                 _log.error("archive body upload failed after %s attempt(s): %s exception_type=%s",
                            attempt, reason, error_type)
@@ -169,7 +245,11 @@ async def prepare(body: bytes, content_hash: str, *, mode: str, observation: Sto
             inflight.pop(content_hash, None)
             flight.set_result(reason)
             observation.props["archive_body_upload_ms"] = round(observation.props["archive_body_upload_ms"], 3)
-    return WritePlan(mode) if reason is None else WritePlan("db" if mode == "both" else None, reason=reason)
+    # The write mode selects the normal destination, not the failure policy. Once an eligible
+    # body cannot be published to R2, retain it in DB so the snapshot remains readable. This is
+    # deliberately rare and keeps R2-only operation from turning a transient store fault into
+    # permanent body loss.
+    return WritePlan(mode) if reason is None else WritePlan("db", reason=reason)
 
 
 def submit(factory, body_len: int, observation: StorageReport, *, content_hash: str) -> str | None:
@@ -254,27 +334,45 @@ async def _db_fallback(pointer, path):
 async def read(pointer: BodyPointer, path: str, *, diagnostics: dict | None = None) -> bytes | None:
     """Call only after closing every DB session owned by the request."""
     reason, elapsed, error_type = "none", 0.0, "none"
+    attempts, retry_reason, retry_recovered = 0, "none", False
     def observed(body, source):
         if diagnostics is not None:
             diagnostics.update(cache_body_source=source, cache_body_fallback_reason=reason,
-                               cache_r2_read_ms=elapsed)
+                               cache_r2_read_ms=elapsed, cache_r2_attempts=attempts,
+                               cache_r2_retry_reason=retry_reason,
+                               cache_r2_retry_recovered=retry_recovered)
         return body
 
     if (_r2_first(path)
             and pointer.storage in ("both", "r2")):
         started = time.monotonic()
-        try:
-            async with asyncio.timeout(get_settings().archive_r2_read_timeout_s):
-                if _store is None:
-                    raise ObjectStoreError("store_unavailable")
-                body = await _store.get(pointer.content_hash)
+        total_timeout = get_settings().archive_r2_read_timeout_s
+        attempt_timeout = min(_READ_ATTEMPT_MAX_S, total_timeout / _READ_ATTEMPTS)
+        for attempt in range(1, _READ_ATTEMPTS + 1):
+            attempts = attempt
+            try:
+                async with asyncio.timeout(attempt_timeout):
+                    if _store is None:
+                        raise ObjectStoreError("store_unavailable")
+                    body = await _store.get(pointer.content_hash)
                 if body is None:
                     reason = "not_found"
-                else:
-                    elapsed = round((time.monotonic() - started) * 1000, 3)
-                    return observed(body, "r2")
-        except Exception as exc:
-            reason, error_type = failure_reason(exc), exception_name(exc)
+                    break
+                reason = "none"
+                elapsed = round((time.monotonic() - started) * 1000, 3)
+                retry_recovered = retry_reason != "none"
+                if retry_recovered:
+                    outcomes["read_retry_recovered_" + path] += 1
+                return observed(body, "r2")
+            except Exception as exc:
+                reason, error_type = failure_reason(exc), exception_name(exc)
+            if reason not in _RETRYABLE_FAILURES or attempt == _READ_ATTEMPTS:
+                break
+            retry_reason = reason
+            outcomes["read_retry_" + path] += 1
+            outcomes["read_retry_" + path + "_" + reason] += 1
+            delay = min(random.uniform(0.05, 0.1), total_timeout * 0.05)
+            await asyncio.sleep(delay)
         elapsed = round((time.monotonic() - started) * 1000, 3)
         if reason in {"not_found", "hash_mismatch"}:
             _uploaded.pop(pointer.content_hash, None)

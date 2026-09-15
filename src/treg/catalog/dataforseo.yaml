@@ -12,9 +12,15 @@ source:
 # House rules for this provider (they apply to EVERY endpoint below, so they are stated once here
 # rather than repeated in each `input.note`):
 #
-#  1. Every data endpoint is POST and its body is an ARRAY of task objects. One array element = one
-#     billable task; the fields documented under `input.body` are the fields of a single element.
-#     Sending `{...}` instead of `[{...}]` yields status_code 40501 "Invalid Field".
+#  1. Every data endpoint is POST and its body is an ARRAY of task objects. The fields documented
+#     under `input.body` are the fields of a single element. Sending `{...}` instead of `[{...}]`
+#     yields status_code 40501 "Invalid Field".
+#     Live routes in this file accept exactly ONE task per request (vendor: "each Live API call
+#     can contain only one task"). Extra array elements get per-task status 40000
+#     "You can set only one task at a time" and $0 — do not batch domains as multiple tasks.
+#     Multi-target work goes on a bulk_* live route (many targets inside one task), not a
+#     multi-element array. The "up to 100 tasks" batch is Standard /task_post, which this
+#     core file does not list.
 #  2. The HTTP status is 200 even when the call failed. Two status codes matter:
 #       - the envelope `status_code` (20000 = OK)
 #       - the per-task `tasks[0].status_code` (20000 = OK; 40501/40400/... = this task failed)
@@ -60,7 +66,7 @@ source:
 # ============================================================================================
 
 
-limits: "2000 requests/min; up to 100 tasks per POST array"
+limits: "2000 requests/min; Live routes (every core endpoint here): exactly one task per POST — extra tasks return status 40000. Standard /task_post (extended catalog only) batches up to 100."
 pricing_url: https://dataforseo.com/pricing  # A billable 'SERP' is 10 results, not a whole page. Credits never expire; pay-as-you-go after the minimum top-up. Live mode is ~3x Standard.; free tier: 1 USD trial credit on si
 endpoints:
   # --- Backlinks (the Moz overlap group) --------------------------------------------------------
@@ -84,7 +90,7 @@ endpoints:
         internal_list_limit: {type: integer, required: false, note: "max elements per internal breakdown array, 10-1000; default 10", example: 10}
         rank_scale: {type: string, required: false, note: "one_hundred | one_thousand; default one_thousand"}
         backlinks_filters: {type: array, required: false, note: "narrow the backlink set the aggregates are computed over"}
-      note: "POST body is an array of these task objects; one element = one billable task"
+      note: "POST body is a JSON array that must contain exactly one task object. This live route rejects extra elements with per-task status 40000 \"You can set only one task at a time\" ($0 on the rejected tasks) — one domain per call. For many targets in one request use dataforseo.web.url.metrics (/backlinks/bulk_ranks/live), which takes up to 1000 targets inside a single task."
     test_request:
       body:
         - {target: "moz.com", internal_list_limit: 10}
@@ -115,7 +121,7 @@ endpoints:
         exclude_internal_backlinks: {type: boolean, required: false, note: "default true"}
         filters: {type: array, required: false, note: "max 8 conditions"}
         order_by: {type: array, required: false, note: "max 3 rules, e.g. [\"rank,desc\"]"}
-      note: "POST body is an array of these task objects; one element = one billable task"
+      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays)"
     test_request:
       body:
         - {target: "moz.com", limit: 2, mode: "one_per_domain"}
@@ -146,7 +152,7 @@ endpoints:
         exclude_internal_backlinks: {type: boolean, required: false, note: "default true"}
         filters: {type: array, required: false}
         order_by: {type: array, required: false}
-      note: "POST body is an array of these task objects; one element = one billable task"
+      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays)"
     test_request:
       body:
         - {target: "moz.com", limit: 2}
@@ -176,7 +182,7 @@ endpoints:
         include_subdomains: {type: boolean, required: false, note: "default true"}
         filters: {type: array, required: false}
         order_by: {type: array, required: false}
-      note: "POST body is an array of these task objects; one element = one billable task"
+      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays)"
     test_request:
       body:
         - {target: "moz.com", limit: 2}
@@ -205,7 +211,7 @@ endpoints:
       body:
         targets: {type: array, required: true, note: "up to 1000 domains/subdomains (no scheme, no www) or full page URLs", example: ["moz.com"]}
         rank_scale: {type: string, required: false, note: "one_hundred (0-100, comparable to Moz DA) | one_thousand (default)"}
-      note: "POST body is an array of these task objects; one element = one billable task"
+      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays)"
     test_request:
       body:
         - {targets: ["moz.com"], rank_scale: "one_hundred"}
@@ -234,7 +240,7 @@ endpoints:
         main_domain: {type: boolean, required: false, note: "return main domains only; default false"}
         filters: {type: array, required: false}
         order_by: {type: array, required: false}
-      note: "POST body is an array of these task objects; one element = one billable task"
+      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays)"
     test_request:
       body:
         - {target: "moz.com", limit: 2}
@@ -265,7 +271,7 @@ endpoints:
         device: {type: string, required: false, note: "desktop (default) | mobile"}
         os: {type: string, required: false, note: "windows/macos for desktop, android/ios for mobile"}
       note: |
-        POST body is an array of these task objects; one element = one billable task.
+        POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays).
         `/live/regular` is the cheap variant used here: plain organic + a few SERP feature types.
         `/live/advanced` costs more and adds the full set of SERP features (people_also_ask,
         AI overview, images, videos, …) — switch paths if you need those elements.
@@ -300,7 +306,7 @@ endpoints:
         date_to: {type: string, required: false, note: "yyyy-mm-dd, cannot be later than last month"}
         include_adult_keywords: {type: boolean, required: false, note: "default false"}
         sort_by: {type: string, required: false, note: "relevance (default) | search_volume | competition_index | low_top_of_page_bid | high_top_of_page_bid"}
-      note: "POST body is an array of these task objects; one task is billed as one call regardless of keyword count, so batch keywords rather than looping"
+      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays); the task is billed as one call regardless of keyword count, so batch keywords within a single task"
     test_request:
       body:
         - {keywords: ["coffee"], location_code: 2840, language_code: "en"}
@@ -332,9 +338,8 @@ endpoints:
         include_serp_info: {type: boolean, required: false, note: "attach SERP data per keyword; default false"}
         include_clickstream_data: {type: boolean, required: false, note: "DOUBLES the cost; default false"}
         ignore_synonyms: {type: boolean, required: false, note: "drop near-duplicate keywords; default false"}
-        filters: {type: array, required: false, note: "max 8 conditions"}
-        order_by: {type: array, required: false, note: "max 3 rules"}
-      note: "POST body is an array of these task objects; one element = one billable task"
+        filters: {type: array, required: false, note: "max 8 conditions; keyword_info.search_volume and keyword_properties.keyword_difficulty are accepted"}
+      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays). Sorting is unsupported on this route — do not send order_by (live API returns 40501 Invalid Field even though the vendor docs list it)."
     test_request:
       body:
         - {keyword: "coffee", location_code: 2840, language_code: "en", depth: 1, limit: 2}
@@ -366,7 +371,7 @@ endpoints:
         load_rank_absolute: {type: boolean, required: false, note: "include absolute SERP position; default false"}
         filters: {type: array, required: false, note: "max 8 conditions"}
         order_by: {type: array, required: false, note: "max 3 rules"}
-      note: "POST body is an array of these task objects; one element = one billable task"
+      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays)"
     test_request:
       body:
         - {target: "moz.com", location_code: 2840, language_code: "en", limit: 2}
@@ -391,12 +396,12 @@ endpoints:
       body:
         url: {type: string, required: true, note: "FULL absolute URL including scheme — unlike the backlinks endpoints", example: "https://moz.com/"}
         custom_user_agent: {type: string, required: false}
-        browser_preset: {type: string, required: false, note: "desktop | mobile | tablet"}
-        enable_javascript: {type: boolean, required: false, note: "render JS; costs more; default false"}
-        enable_browser_rendering: {type: boolean, required: false, note: "measure Core Web Vitals; implies enable_javascript; costs more; default false"}
+        browser_preset: {type: string, required: false, note: "desktop | mobile | tablet; requires enable_browser_rendering=true — live API returns 40501 without it. Omit this field if you only need enable_javascript."}
+        enable_javascript: {type: boolean, required: false, note: "render JS; costs more; default false. Not sufficient for browser_preset."}
+        enable_browser_rendering: {type: boolean, required: false, note: "measure Core Web Vitals; implies enable_javascript; required for browser_preset; costs more; default false"}
         accept_language: {type: string, required: false}
         check_spell: {type: boolean, required: false, note: "default false"}
-      note: "POST body is an array of these task objects; one element = one billable task (one page crawled)"
+      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays; one page crawled per task). Do not send browser_preset without enable_browser_rendering=true (live API returns 40501)."
     test_request:
       body:
         - {url: "https://moz.com/"}

@@ -38,7 +38,7 @@ from ...domain.catalog.routing.contracts import canonical_identity
 from ...domain.catalog.routing.plan import (
     MAX_ERROR_FALLBACKS, Candidate, Plan, candidates_for, cost_at, ignored_filters, rank,
 )
-from .resolve import _host_of, _marketplace_secret
+from .resolve import _anonymous_offer, _host_of, _marketplace_secret
 from .types import CallContext, CallFailure, GatewayFailed, ResolutionFailed, UpstreamResponse
 
 log = logging.getLogger("treg.route")
@@ -276,7 +276,13 @@ async def build_plan(ep: dict, identity_given: dict, caller, options: RouteOptio
     cands: list[Candidate] = []
     for e, ad, v in raw:
         st = stats.get(e["id"]) or {}
-        tier = "tool" if e["provider"] in own_tools else "credential" if e["provider"] in own else "platform"
+        anonymous = _anonymous_offer(e, caller.org) is not None
+        tier = (
+            "tool" if e["provider"] in own_tools else
+            "credential" if e["provider"] in own else
+            "anonymous" if anonymous else
+            "platform"
+        )
         cv = cat.cost_view(e.get("cost"), e["provider"])
         price = 0 if tier != "platform" else cost_at(cv, identity, ad)
         c = Candidate(endpoint=e, adapter=ad, variant=v, tier=tier, price_micro=price, hit_rate=st.get("hit_rate"),
@@ -389,9 +395,11 @@ async def run_routed(parent: CallContext, ep: dict, body_bytes: bytes, get_heade
     answers: list[tuple] = []      # every attempt that returned rows, for X-Treg-Route-Merge
     weak_hits = 0
     best: tuple[int, tuple[Candidate, dict, dict, bytes]] | None = None   # best WEAK answer seen
+    cost_capped = False            # true when any candidate was skipped due to max-cost ceiling
     for n, cand in enumerate(plan.candidates):
         if options.max_cost_micro is not None and spent + (cand.price_micro or 0) > options.max_cost_micro:
             tried.append(Attempt(cand.endpoint["id"], cand.endpoint["provider"], "skipped", None, 0, "would exceed max cost"))
+            cost_capped = True
             continue
         if rejected_by and (cand.endpoint["provider"] in rejected_by or not _free_on_failure(cand)):
             tried.append(Attempt(cand.endpoint["id"], cand.endpoint["provider"], "skipped", None, 0,
@@ -412,6 +420,7 @@ async def run_routed(parent: CallContext, ep: dict, body_bytes: bytes, get_heade
             if exc.kind == "route_max_cost":
                 tried.append(Attempt(cand.endpoint["id"], cand.endpoint["provider"], "skipped", None, 0,
                                      "would exceed max cost"))
+                cost_capped = True
                 continue
             if exc.kind in _GLOBAL_REFUSALS or (
                 exc.status_code in _CALLER_FAULT and exc.kind not in _CANDIDATE_LOCAL_FAILURES
@@ -523,9 +532,12 @@ async def run_routed(parent: CallContext, ep: dict, body_bytes: bytes, get_heade
             last = next(t for t in reversed(tried) if t.outcome == "miss")
             body_out = {"output": {k: None for k in plan.contract.output}, "raw": None,
                         "_treg": {"served_by": None, "outcome": "miss", "tried": [t.view() for t in tried], "charged_micro": spent,
+                                  **({"capped": True} if cost_capped else {}),
                                   **({"dropped": plan.dropped} if plan.dropped else {})}}
             _audit_parent(parent, ep, 200, spent, audit_client)
-            return _json(body_out, 200, {"X-Treg-Providers-Tried": ",".join(t.provider for t in tried), "X-Treg-Route-Outcome": "miss"}), spent
+            headers = {"X-Treg-Providers-Tried": ",".join(t.provider for t in tried), "X-Treg-Route-Outcome": "miss",
+                       **({"X-Treg-Route-Capped": "true"} if cost_capped else {})}
+            return _json(body_out, 200, headers), spent
         _audit_parent(parent, ep, 502, spent, audit_client)
         raise GatewayFailed("route_failed", status_code=502, detail={
             "error": "route_failed", "endpoint_id": ep["id"], "tried": [t.view() for t in tried], "charged_micro": spent,
@@ -563,12 +575,14 @@ async def run_routed(parent: CallContext, ep: dict, body_bytes: bytes, get_heade
                           **({"merged_from": merged_from} if merged_from else {}),
                           **({"advice": advice} if advice else {}),
                           "outcome": winner_outcome, "tried": [t.view() for t in tried], "charged_micro": spent,
+                          **({"capped": True} if cost_capped else {}),
                           **({"ignored_filters": list(cand.ignored)} if cand.ignored else {}),
                           **({"dropped": plan.dropped} if plan.dropped else {})}}
     _audit_parent(parent, ep, 200, spent, audit_client)
     return _json(body_out, 200, {"X-Treg-Served-By": served, "X-Treg-Providers-Tried": ",".join(t.provider for t in tried),
                                  **({"X-Treg-Merged-From": ",".join(merged_from)} if merged_from else {}),
                                  **({"X-Treg-Ignored-Filters": ",".join(cand.ignored)} if cand.ignored else {}),
+                                 **({"X-Treg-Route-Capped": "true"} if cost_capped else {}),
                                  "X-Treg-Route-Outcome": winner_outcome}), spent
 
 
@@ -576,6 +590,8 @@ def _audit_parent(parent: CallContext, ep: dict, status: int, charged: int, clie
     c = parent.input.caller
     audit.record_call(org_id=c.org_id, user_email=c.email, tool_name=ep["id"], method="POST", path=ep["path"],
                       status_code=status, client=client,
+                      api_key_id=c.api_key_id, api_key_name=c.api_key_name,
+                      api_key_prefix=c.api_key_prefix,
                       telemetry={"call_ref": parent.call_ref, "endpoint_id": ep["id"], "provider": "treg",
                                  "credential_tier": "routed", "cost_charged_micro": charged})
 

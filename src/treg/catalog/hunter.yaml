@@ -146,6 +146,8 @@ endpoints:
       checked: '2026-07-31'
       confidence: verified
       note: '1 SEARCH credit per 10 emails returned (rounded up); a domain with no results is free. OBSERVED 2026-07-31 — a `limit` of 1 on a domain never queried on this key returned 1 email and moved requests.credits.used by exactly 1.000, confirming the per-10 rounding — one email costs the same whole credit as ten, so a limit below 10 buys nothing.'
+      # Reserve still uses the per-email slice; catalog_get / usd_per_call quote one SEARCH credit.
+      display: {unit: emails, grouped: true, round_up: true}
     verified: 2026-07-31
     example_response: examples/hunter.companies.emails.json
     docs_url: https://hunter.io/api-documentation/v2#domain-search

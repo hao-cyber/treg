@@ -20,6 +20,7 @@ AGGREGATORS = ("orthogonal", "monid")
 # flagged by the sweep — a policy row must be classified by a person, never guessed by code.
 _KNOWN: dict[str, tuple[str, str, str]] = {
     "trykitt": ("cash", "manual", "api"),
+    "harvestapi": ("cash", "auto_recharge", "api"),  # Owner will enable vendor auto top-up for production.
     "dataforseo": ("cash", "auto_recharge", "api"),
     "tikhub": ("cash", "auto_recharge", "api"),
     "lusha": ("credits", "auto_recharge", "api"),
@@ -51,6 +52,7 @@ _KNOWN: dict[str, tuple[str, str, str]] = {
     "diffbot": ("monthly_quota", "quota_reset", "api"),
     "apify": ("cash", "manual", "api"),
     "twelvedata": ("requests", "subscription", "api"),
+    "financialdatasets": ("credits", "auto_recharge", "manual"),
     # Neither aggregator exposes a balance endpoint at its documented path (plan §7).
     "overflow:orthogonal": ("cash", "manual", "manual"),
     "overflow:monid": ("cash", "manual", "manual"),

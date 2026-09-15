@@ -24,8 +24,9 @@ from ..domain import arena as rules, money
 from ..domain.catalog import store as catalog_store
 from ..domain.catalog.routing.paths import country_name
 from ..domain.identity.access import Caller
+from ..domain.identity import api_keys as managed_keys
 from ..infra.db import session_maker
-from ..models import ArenaEvaluation, ArenaRun, LedgerEntry, Membership, Org, User
+from ..models import ApiKey, ArenaEvaluation, ArenaRun, LedgerEntry, Membership, Org, User
 from ..timeutil import utcnow_naive as now
 from .call import route, service
 from .call.resolve import _marketplace_pricing
@@ -522,7 +523,15 @@ async def _fresh_caller(snapshot):
         org = await db.get(Org, snapshot.org.id)
         if not member or not user or not org or user.suspended or org.suspended:
             raise rules.ArenaError("Team access is no longer available.", 403)
-        current = CallerSnapshot.capture(Caller(member, user, org))
+        key = await db.get(ApiKey, snapshot.api_key_id) if snapshot.api_key_id else None
+        if snapshot.api_key_id and (
+            key is None or key.state != managed_keys.ACTIVE
+            or key.membership_id != member.id or key.org_id != org.id
+            or (key.kind == managed_keys.DEFAULT_KIND
+                and key.default_generation != snapshot.api_key_generation)
+        ):
+            raise rules.ArenaError("This API key is no longer active. Sign in again.", 401)
+        current = CallerSnapshot.capture(Caller(member, user, org, key))
     # A comparison measures a direct service. Avoid aggregator substitutions and their different
     # prices; this is a per-run execution choice, never a change to the team's settings.
     return replace(current, org=replace(current.org, platform_overflow_disabled=True))

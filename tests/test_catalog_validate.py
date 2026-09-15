@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from scripts import catalog_validate as validator
@@ -603,3 +605,49 @@ def test_generic_price_display_metadata(display, valid):
     errors = []
     validator.check_cost(cost, 'test', errors, [])
     assert (not errors) == valid
+
+
+@pytest.mark.parametrize('patch,valid', [
+    ({}, True), ({'strict_query': 'yes'}, False), ({'method': 'POST'}, False),
+    ({'path': '/{id}'}, False),
+    ({'input': {'queryParams': {'mode': {'enum': [True]}}}}, False),
+])
+def test_strict_query_contract_validation(patch, valid):
+    ep = {'strict_query': True, 'method': 'GET', 'path': '/lookup',
+          'input': {'queryParams': {'mode': {'type': 'string', 'enum': ['true']}}}}
+    errors = []
+    validator.check_strict_query(ep | patch, 'example', errors)
+    assert bool(errors) is not valid
+
+
+@pytest.mark.parametrize('patch,valid', [
+    ({}, True),
+    ({'platform_auth': 'provider'}, False),
+    ({'method': 'POST'}, False),
+    ({'cost': {'type': 'per_success', 'value': 0.02}}, False),
+    ({'verified': ''}, False),
+    ({'scope': 'own_account'}, False),
+    ({'authorization_method': 'oauth'}, False),
+    ({'async': {'poll': {}}}, False),
+])
+def test_anonymous_platform_auth_is_a_verified_free_read_only_contract(patch, valid):
+    ep = {
+        'id': 'example.public.values',
+        'platform_auth': 'anonymous',
+        'method': 'GET',
+        'scope': 'any_account',
+        'cost': {'type': 'free', 'value': 0, 'currency': 'USD', 'unit': 'call'},
+        'verified': '2026-09-15',
+    }
+    errors = []
+    validator.check_platform_auth(ep | patch, 'example', errors)
+    assert (not errors) is valid
+
+
+def test_missing_platform_auth_normalizes_as_absent():
+    normalized = catalog_store._normalize({
+        'id': 'example.public.values',
+        'method': 'GET',
+        'path': '/values',
+    }, 'example', Path('.'))
+    assert normalized['platform_auth'] is None

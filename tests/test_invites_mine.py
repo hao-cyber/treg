@@ -17,7 +17,7 @@ async def client():
     await reset_db()
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://registry",
-        headers={"ngrok-skip-browser-warning": "1"},
+        headers={"ngrok-skip-browser-warning": "1", "X-Treg-Key-Protocol": "1"},
     ) as c:
         yield c
 
@@ -38,8 +38,8 @@ async def _make_org_with_invite(c: AsyncClient, owner_email: str, invitee: str, 
     tok = await _otp(c, owner_email)
     # a fresh user has NO org — creating their first team needs only the identity token (no X-Treg-Org)
     org = (await c.post("/orgs", json={"name": "Superdesign"}, headers=_h(tok))).json()
-    await c.post(f"/orgs/{org['org_id']}/invites", json={"email": invitee, "role": role}, headers=_h(tok, org["org"]))
-    return tok, org
+    await c.post(f"/orgs/{org['org_id']}/invites", json={"email": invitee, "role": role}, headers=_h(org["token"]))
+    return org["token"], org
 
 
 async def test_invite_seen_and_accepted_without_code(client):
@@ -77,7 +77,7 @@ async def _invite_code(c: AsyncClient, owner_email: str, invitee: str, role: str
     tok = await _otp(c, owner_email)
     org = (await c.post("/orgs", json={"name": "Superdesign"}, headers=_h(tok))).json()
     r = await c.post(f"/orgs/{org['org_id']}/invites",
-                     json={"email": invitee, "role": role}, headers=_h(tok, org["org"]))
+                     json={"email": invitee, "role": role}, headers=_h(org["token"]))
     return r.json()["code"]
 
 
@@ -129,7 +129,7 @@ async def test_email_token_not_in_create_response_and_differs_from_code(client, 
     tok = await _otp(client, "tom@sd.io")
     org = (await client.post("/orgs", json={"name": "Superdesign"}, headers=_h(tok))).json()
     r = (await client.post(f"/orgs/{org['org_id']}/invites",
-                           json={"email": "bob@x.io", "role": "member"}, headers=_h(tok, org["org"]))).json()
+                           json={"email": "bob@x.io", "role": "member"}, headers=_h(org["token"]))).json()
     assert "email_token" not in r  # the admin must never see the inbox-only secret
     assert len(sent_invites) == 1
     assert sent_invites[0]["email_token"] and sent_invites[0]["email_token"] != r["code"]
@@ -217,7 +217,7 @@ async def test_invites_mine_newest_first_with_created_at(client, sent_invites, s
     tok2 = await _otp(client, "ann@other.io")
     org2 = (await client.post("/orgs", json={"name": "Second Team"}, headers=_h(tok2))).json()
     await client.post(f"/orgs/{org2['org_id']}/invites",
-                      json={"email": "bob@x.io", "role": "viewer"}, headers=_h(tok2, org2["org"]))
+                      json={"email": "bob@x.io", "role": "viewer"}, headers=_h(org2["token"]))
     # Control the ordering evidence rather than relying on wall-clock progression. Equal
     # timestamps also occur on coarse clocks and need a stable newest-inserted tiebreaker.
     from datetime import datetime, timedelta
@@ -253,12 +253,12 @@ async def test_share_invite_landing_roundtrip_and_redirect(client, sent_invites)
     flavours the email, and the emailed link's POST lands on the shared page (not the dashboard)."""
     tok = await _otp(client, "tom@sd.io")
     org = (await client.post("/orgs", json={"name": "Superdesign"}, headers=_h(tok))).json()
-    await client.post("/skills", json=SHARE_SKILL, headers=_h(tok, org["org"]))
+    await client.post("/skills", json=SHARE_SKILL, headers=_h(org["token"]))
     r = await client.post(
         f"/orgs/{org['org_id']}/invites",
         json={"email": "bob@x.io", "role": "viewer", "landing": "/app/skills/intercom",
               "tool_access": ["intercom"], "local_run_enabled": False},
-        headers=_h(tok, org["org"]))
+        headers=_h(org["token"]))
     assert r.status_code == 200, r.text
     assert "the skill" in sent_invites[0]["shared"] and "intercom" in sent_invites[0]["shared"]
 
@@ -282,9 +282,9 @@ async def test_share_invite_landing_is_allowlisted(client):
     for bad in ("https://evil.com", "//evil.com/x", "/app/skills/../../etc", "/app/other/x",
                 "/app/skills/", "/app/skills/a/b", "javascript:alert(1)"):
         r = await client.post(f"/orgs/{org['org_id']}/invites",
-                              json={"email": "bob@x.io", "landing": bad}, headers=_h(tok, org["org"]))
+                              json={"email": "bob@x.io", "landing": bad}, headers=_h(org["token"]))
         assert r.status_code == 422, f"{bad!r} should be rejected, got {r.status_code}"
     ok = await client.post(f"/orgs/{org['org_id']}/invites",
                            json={"email": "bob@x.io", "landing": "/app/tools/stripe-cli"},
-                           headers=_h(tok, org["org"]))
+                           headers=_h(org["token"]))
     assert ok.status_code == 200

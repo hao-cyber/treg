@@ -55,6 +55,11 @@ owner per use, so even a call on the org's *own* connection spends treg's prepai
 [auth-secrets](auth-secrets.md)). Both run the same reserve→relay→settle path in `routers/call.py`, share the
 fail-closed daily cap, and are distinguished in ledger meta by `tier: platform` vs `tier: oauth`.
 An org's own key/credential on any *other* provider is never metered - there the org's account pays.
+An endpoint declared `platform_auth: anonymous` is also unmetered: after the own-key tiers miss,
+`_anonymous_offer` relays its verified public route with no provider credential and creates no
+reserve, settle, or release entry. Catalog validation permits this only on free read-only routes.
+These calls still pass normal authorization and any configured per-member daily call cap. That cap
+defaults to unlimited. Sandbox and public-demo teams cannot use the real anonymous fallback.
 
 On an oauth-billed provider a **`free` catalog price is a bug, never a fact**: the upstream charges us
 whatever the route costs, so a zero there means the entry is stale, not that the call is free. The
@@ -470,7 +475,8 @@ Provider-specific calculation stays outside the faithful relay.
 | Evidence | Settlement behavior |
 |---|---|
 | Reported charge | DataForSEO `cost`, ScrapeCreators `credits_charged`, Akta `credits_consumed`, Lusha `billing.creditsCharged`, Exa `costDollars.total`; credit amounts use the catalog FX rate |
-| Crustdata | Read `X-Credits-Used` from response headers using the same FX rate |
+| Crustdata, cloro | Read the charge from a response HEADER (`_CREDIT_HEADERS`: Crustdata `X-Credits-Used`, cloro `X-Credits-Charged`) using the same FX rate. cloro omits the header on its free routes and on a failed extraction, neither of which it bills, so an absent header settles at the estimate, not at zero |
+| cloro reserve | `cost.value` is the full-surface `test_request` price (ChatGPT 9, Google SERP 7); the plain call settles lower from the header (verified live 2026-09-07 at the then-Lite rate: reserve 7,200 µ$, settled 5,600, refunded 1,600; at the Hobby rate 3,600 → 2,800, re-verified 2026-09-14). The top-level `state` body field is a `cost.modifiers` rider (+2 credits) reserved through the same generic path Aviato uses, which is open to any credit-priced provider with a FX rate |
 | Apollo | Known empty organization results are free |
 | Tomba domain search | Non-empty pages cost ceil(`meta.pageSize` / 10) credits, even when partially filled; empty `data.emails` is free. Reservation uses requested `limit`, default 10. Missing/malformed page evidence falls back to the estimate. Upstream duplicate discounts are not detected |
 | Hunter domain search | One whole search credit per ten returned emails, rounded up; an empty result is free |
@@ -733,7 +739,7 @@ Why a counter and not an index: until 2026-09-06 the check was that journal aggr
 org that writes a large share of the platform's day its rows sit on nearly every heap page of the
 day, so no index makes the aggregate cheaper than reading the day - measured 395k buffer touches
 per call, 56-171 s once those pages were cold, holding an api-pool slot throughout. That was the
-API-pool saturation (see [deploy](../ops/deploy.md) § Three pools).
+API-pool saturation (see [deploy](../ops/deploy.md) § Database pools).
 
 ## Referrals
 
@@ -817,9 +823,9 @@ The overflow child (`application.call.overflow`) is an ordinary metered cycle on
 and `cost_source: "aggregator"` + `served_via` in the ledger `meta`, so `reconcile` needs no join.
 `OverflowSpend` (per aggregator per UTC day) is updated inside that same settle transaction; it is
 accounting for the per-aggregator daily budget, not a balance. That budget is
-`TREG_OVERFLOW_DAILY_BUDGET_USD`: the code and the public Blueprint default to $20, and production
-runs at $500 set by the private Blueprint in treg-internal (the value is owned there; this repo's
-`render.yaml` is not what production reads). Shadow mode places no hold and charges nothing.
+`TREG_OVERFLOW_DAILY_BUDGET_USD`: the code default is $20 per aggregator. A deployment may set a
+different value in its private operational configuration. Shadow mode places no hold and charges
+nothing.
 
 **The relay price is disclosed wherever a price is read.** `/call/` says `X-Treg-Served-Via:
 overflow:<aggregator>` with `X-Treg-Cost-Micro` the child's charge; the MCP `call` result (both
@@ -913,3 +919,8 @@ buffering (`MarketplaceCall.streamable_free_result`). It retains the existing ze
 reserve/settle gates and settles with an explicit zero override before returning the stream. It
 does not observe the original generation task or persist a response for idempotent replay; the
 label is released and retrying performs another free read. MIME type never decides billability.
+
+
+## HarvestAPI integration
+
+HarvestAPI reuses `cost.reported_charge` with path `cost` in USD. Billed misses retain their reported charge; wallet reads may lag and are never per-call evidence. Profile variants reserve their own scalar price. See [HarvestAPI](harvestapi.md).

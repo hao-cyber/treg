@@ -10,11 +10,11 @@ from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Every hostname the reference deployment has EVER answered to. treg moved
+# Every hostname the hosted service has answered to. treg moved
 # treg.superdesign.dev → treg.to (2026-08); installed CLIs, skill.md files, .mcp.json configs and
 # MCP OAuth grants exist against BOTH names, so both stay valid everywhere a host or audience is
-# recognized — mcp.py's transport allow-lists, mcp_oauth's token audiences, api.py's login-callback
-# anchoring — REGARDLESS of which one `public_url` currently points at. That symmetry is what makes
+# recognized by mcp.py's transport allow-lists, mcp_oauth's token audiences and api.py's login callback,
+# regardless of which one `public_url` currently points at. That symmetry is what makes
 # a TREG_PUBLIC_URL revert a complete rollback: grants and logins minted on either name survive the
 # flip in either direction. Self-hosters are unaffected: these only ADD accepted names, and none of
 # them resolve to a self-hosted deployment.
@@ -61,9 +61,9 @@ class Settings(BaseSettings):
     @field_validator("database_url")
     @classmethod
     def _async_pg_driver(cls, v: str) -> str:
-        # Render's `fromDatabase` (render.yaml) injects a bare `postgres://`/`postgresql://` URL, but
+        # Some hosts inject a bare `postgres://`/`postgresql://` URL, but
         # our async engine (create_async_engine) needs the asyncpg driver. Rewrite the scheme so the
-        # Blueprint can auto-wire the DB with no manual URL editing. No-op for sqlite / already-drivered URLs.
+        # a deployment can auto-wire the DB with no manual URL editing. No-op for sqlite / already-drivered URLs.
         if v.startswith("postgres://"):
             v = "postgresql://" + v[len("postgres://") :]
         if v.startswith("postgresql://"):
@@ -180,6 +180,7 @@ class Settings(BaseSettings):
     platform_key_millionverifier: str = ""  # raw key; injected as ?api=…
     platform_key_hunter: str = ""
     platform_key_sumble: str = ""  # Bearer; Pro monthly credits, optional vendor auto-top-up
+    platform_key_harvestapi: str = ""  # X-API-Key; prepaid USD wallet
     platform_key_quickenrich: str = ""  # Bearer; monthly subscription credits, not auto-top-up
     platform_key_leadmagic: str = ""
     platform_key_lusha: str = ""
@@ -199,6 +200,7 @@ class Settings(BaseSettings):
     platform_key_finnhub: str = ""      # FREE-tier key — trial pool, 50 calls/team/day
     platform_key_twelvedata: str = ""   # FREE Basic key (800/day TOTAL) — trial pool, 20 calls/team/day
     platform_key_tiingo: str = ""       # FREE Starter key (1,000/day total) — trial pool, 20 calls/team/day
+    platform_key_financialdatasets: str = ""  # X-API-KEY; prepaid Credits with vendor auto-reload
     # ---- Enrichment expansion (2026-08-20). Slots only — fund the accounts and set the keys before
     # naming any of these in TREG_PLATFORM_PROVIDERS.
     platform_key_companyenrich: str = ""  # Bearer key
@@ -216,9 +218,12 @@ class Settings(BaseSettings):
     platform_key_crustdata: str = ""  # Bearer key; every call also needs the pinned x-api-version header
     platform_key_aviato: str = ""     # Bearer key; $10 auto-top-up buys 1,000 credits
     platform_key_exa: str = ""        # x-api-key; dollar-metered ($7/1k searches, $1/1k pages); settles from costDollars.total
+    platform_key_cloro: str = ""      # Bearer key (sk_live_…); Hobby metered rate $0.0004/credit; settles from X-Credits-Charged
     platform_key_minimax: str = ""    # Bearer key for asynchronous Hailuo generation
     platform_key_openrouter: str = ""  # Bearer key for asynchronous routed generation
     platform_key_replicate: str = ""  # Bearer token for official asynchronous models
+    platform_key_reapi: str = ""      # Bearer key; prepaid credits at $0.001, Seedance 2.5 + image models
+    platform_key_piapi: str = ""      # X-API-Key; prepaid USD balance, Seedance 2.5 less-restriction + image models
     # Overflow aggregators (docs/PROVIDER-CAPACITY-PLAN.md §4.3): treg-owned accounts that serve the
     # SAME vendor endpoint when our direct account is out. Env only, never a Secret row, never logged.
     # Not platform_key_* on purpose: they are a credential RUNG (platform-overflow), not a provider.
@@ -514,12 +519,21 @@ class Settings(BaseSettings):
         """The allow-listed tier-4 providers (comma-separated `TREG_PLATFORM_PROVIDERS`)."""
         return frozenset(p.strip().lower() for p in self.platform_providers.split(",") if p.strip())
 
+    def platform_provider_enabled(self, provider: str) -> bool:
+        """Whether this deployment allows a catalog fallback for `provider`.
+
+        Most fallbacks also need `platform_key_for`. A catalog endpoint explicitly verified as
+        anonymous needs only this operator-controlled switch because no provider credential or
+        provider balance is used.
+        """
+        return (provider or "").lower() in self.platform_provider_set
+
     def platform_key_for(self, provider: str) -> str | None:
         """treg's own key for `provider`, or None if tier 4 must not serve it. BOTH conditions have to
         hold — the provider is allow-listed AND a key is configured — so neither half alone can start
         spending our money. Returns the value only; callers put the SETTING NAME in the binding
         (`platform_setting_name`) so the key itself never travels through a tool row."""
-        if (provider or "").lower() not in self.platform_provider_set:
+        if not self.platform_provider_enabled(provider):
             return None
         return getattr(self, platform_setting_name(provider), "") or None
 

@@ -106,7 +106,10 @@ class Catalog:
     adapters: dict = field(default_factory=dict)    # endpoint id -> routing.Adapter (verified flag set)
 
     def for_capability(self, capability: str) -> list[dict]:
-        return [e for e in self.endpoints if capability and e["capability"] == capability]
+        return [e for e in self.endpoints if capability and (
+            e["capability"] == capability or
+            (e["id"] in self.adapters and capability in self.adapters[e["id"]].verified_capabilities)
+        )]
 
     def for_platform(self, slug: str) -> list[dict]:
         return [e for e in self.endpoints if e["platform"] == slug]
@@ -165,11 +168,36 @@ class Catalog:
         floor = cost.get("table_min")
         if isinstance(floor, (int, float)) and rate is not None and per > 0 and usd is not None:
             out["usd_min"] = min(usd, round(floor * rate / per, 9))
+        # A duration-priced table is ADVERTISED as a per-second rate (`rate_usd_min`-`rate_usd`
+        # per `rate_unit`), the way every video model is quoted; `usd`/`usd_min` stay the
+        # reserve ceiling and floor for a whole call.
+        span = cost.get("table_rate")
+        if isinstance(span, list) and len(span) == 2 and rate is not None and per > 0 \
+                and usd is not None:
+            out["rate_usd_min"] = round(float(span[0]) * rate / per, 9)
+            out["rate_usd"] = round(float(span[1]) * rate / per, 9)
+            out["rate_unit"] = "s"
         # A $0 trial price travels with its allowance, so every surface showing the price can also
         # say how much of it a team gets — a bare $0.00 would read as unlimited.
         if provider in self.trial_pools and usd == 0:
             out["trial_calls_per_team_day"] = self.trial_pools[provider]
         return out
+
+    def advertised_usd(self, cost: dict | None) -> float | None:
+        """Dollar figure catalog_search / catalog_get should quote for one typical paid call.
+
+        `usd` is the reserve unit: for `per` > 1 it is the linear slice (Hunter Domain Search
+        → $0.00245/email). When `display.grouped` is set, `display_usd` is the chargeable
+        event — one search credit, one started block — which is what a live successful call
+        actually bills and what `usd_per_call` must say. Settlement still reads `usd`.
+        """
+        if not cost:
+            return None
+        shown = cost.get("display_usd")
+        if isinstance(shown, (int, float)) and not isinstance(shown, bool):
+            return shown
+        usd = cost.get("usd")
+        return usd if isinstance(usd, (int, float)) and not isinstance(usd, bool) else None
 
     def platform_eligible(self, endpoint: dict) -> bool:
         """May treg serve this endpoint with a PLATFORM key, billed to the caller's balance?
@@ -281,6 +309,25 @@ def _table_floor(cost: object, input_schema: object) -> float | None:
     return min(floors) if floors else None
 
 
+def _table_rate(cost: object) -> tuple[float, float] | None:
+    """The per-second rate span of a duration-priced table: (cheapest row, dearest row) in the
+    table's own currency, when EVERY row multiplies its value by a `duration` field. A video
+    model is quoted per second of output everywhere else, so a $0.47-$13.9 total range (minimum
+    clip at the cheapest resolution up to the longest clip at the dearest) reads as a mistake;
+    the rate is what a reader compares. Display only - reserve and settle read the rows."""
+    if not isinstance(cost, dict) or not isinstance(cost.get("table"), list) or not cost["table"]:
+        return None
+    values = []
+    for row in cost["table"]:
+        if not isinstance(row, dict) or not isinstance(row.get("value"), (int, float)):
+            return None
+        times = row.get("times")
+        if not isinstance(times, str) or times.rsplit(".", 1)[-1] != "duration":
+            return None
+        values.append(float(row["value"]))
+    return (min(values), max(values))
+
+
 def _parse(directory: Path) -> Catalog:
     if not directory.is_dir():
         return Catalog()
@@ -343,6 +390,9 @@ def _parse(directory: Path) -> Catalog:
             floor = _table_floor(raw.get("cost"), raw.get("input"))
             if floor is not None:
                 raw = {**raw, "cost": {**raw["cost"], "table_min": floor}}
+            span = _table_rate(raw.get("cost"))
+            if span is not None:
+                raw = {**raw, "cost": {**raw["cost"], "table_rate": list(span)}}
             ep = _normalize(raw, provider, directory)
             if ep["id"] in by_id:  # first file wins; ids are unique by validator contract
                 continue
@@ -549,6 +599,9 @@ def _normalize(raw: dict, provider: str, directory: Path) -> dict:
         "kind": str(raw.get("kind") or DEFAULT_KIND).strip().lower() or DEFAULT_KIND,
         "method": (raw.get("method") or "GET").upper(),
         "path": raw.get("path") or "",
+        # Optional alternate provider host. Resolution accepts it only when the provider registry
+        # maps this exact hostname to an approved HTTPS base URL and credential profile.
+        "host": str(raw.get("host") or "").strip().lower(),
         # optional short display title; `summary` stays the provider's own description, verbatim
         "name": str(raw.get("name") or "").strip(),
         "summary": raw.get("summary") or "",
@@ -576,6 +629,15 @@ def _normalize(raw: dict, provider: str, directory: Path) -> dict:
         # enforces `requires`; the buffered successful response persists every `produces` path.
         "resource_ownership": raw.get("resource_ownership") or None,
         "platform_request": raw.get("platform_request") or None,
+        # How treg serves the catalog fallback after the team's own tool/credential ladder misses.
+        # Absent means the provider credential is required. `anonymous` means the verified public
+        # upstream route is called with no injected credential; catalog validation limits that
+        # mode to free, read-only endpoints.
+        "platform_auth": (
+            str(raw["platform_auth"]).strip().lower()
+            if raw.get("platform_auth") is not None else None
+        ),
+        "strict_query": raw.get("strict_query") is True,
         "cost": _effective_cost(raw),
         # Absent `tier` means core: the curated first wave predates the split, and treating an
         # unmarked endpoint as extended would hide it from the platform view entirely.
@@ -666,6 +728,9 @@ def endpoint_view(ep: dict, provider_display: str, cat: Catalog | None = None) -
         # a fact about the row that decides whether the caller needs a credential at all, so it
         # rides on the row rather than being re-derived per client (see `Catalog.platform_eligible`)
         "platform_eligible": cat.platform_eligible(ep) if cat else None,
+        # A public upstream route can be served without treg's provider key. This is declarative
+        # endpoint metadata, not provider logic in the relay.
+        **({"platform_auth": "anonymous"} if ep.get("platform_auth") == "anonymous" else {}),
         # WHY the platform can't serve an otherwise-working route (plan/tier gap on treg's own
         # subscription) — so "bring your own key" is said up front instead of discovered via a 403.
         "platform_blocked": ep.get("platform_blocked") or None,
@@ -682,6 +747,7 @@ def endpoint_view(ep: dict, provider_display: str, cat: Catalog | None = None) -
         # the request schema, split by location (pathParams/queryParams/body + notes) — without it
         # the dashboard can show what comes BACK (example_response) but not what to SEND
         "input": ep.get("input") or None,
+        **({"strict_query": True} if ep.get("strict_query") else {}),
         # the exact request that live-verified this endpoint — the Try-it drawer prefills from it
         # verbatim (it also carries the ground truth the input spec can't express: whether the
         # body is a bare object or an ARRAY of tasks, which dataforseo requires)

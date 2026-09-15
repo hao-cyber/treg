@@ -280,7 +280,10 @@ prevent controlled rankings, and returned fields are not independently verified.
 The heading's “Setup treg in” button shows Claude Code, Codex, OpenClaw and Hermes logos plus
 the count of other choices. It opens a native dialog using the same `AgentPicker` and
 `SetupInstructions` components as the dashboard welcome modal (`agent-setup.js`). The instruction
-label sits inside the prompt card alongside Copy, above the setup command. The remembered
+heading sits above the prompt card; the card is a flat panel with Copy floating in a right gutter
+on desktop and above the command on phones. Both stylesheets style that one shape, and the
+component carries no layout of its own, so a change to its markup is checked on both surfaces
+(the dashboard defines `.agent-setup-instructions .text-button` for "Show key"). The remembered
 `treg-agent` choice, expanded agent list and Grok Bot plugin step are shared. The setup text points
 to this deployment's `/llms.txt`. Continuing as a signed-in team member fetches `/auth/cli-token`
 for the active team; the token is masked by default, copied only on click, never persisted by the
@@ -379,10 +382,12 @@ verified accuracy, and speed excludes queue time. Single-entry winner rules rema
 
 ## Discovery queries
 
-Discover contains Find people (`people.search`), People at a company (`people.company.search`,
-an Arena alias of the catalog's `people.search` capability), and Find similar companies
-(`companies.similar`). Find people accepts a search description or job title plus a recognized
-ISO country code; company people search accepts a company domain with an optional job title.
+Discover contains Find people (`people.search`) and Find similar companies (`companies.similar`).
+Find people offers four input shapes, ordered by real demand: job title plus company domain
+(the default), company domain alone, a free-text search description, or job title plus a
+recognized ISO country code. The former "People at a company" task (`people.company.search`)
+was merged into it on 2026-09-14; runs saved under the old id still resolve through
+`domain.arena.catalog_capability`.
 Similar-company discovery accepts a seed domain. These are direct catalog queries, with no
 agent harness, model-written plan, automatic pagination or implicit follow-up enrichment.
 
@@ -766,3 +771,20 @@ The selected team must be in the signed-in user's memberships. Signed-out visito
 to sign in; email and social sign-in preserve the run destination. Missing, expired or inaccessible
 runs show an error instead of falling back to another result. These are private bookmarks with
 the existing retention limits, not public share links. New queries remove the run parameter.
+
+
+### Harvest profile lookups
+
+Arena discovers Harvest through the shared verified adapter categories. With LinkedIn URL
+input, Find work email selects the email profile tool, Enrich person selects the full profile
+tool, and Enrich company selects the company profile tool. Basic profiles do not enter person
+enrichment. Both Battle and Waterfall use the existing planner and ordinary call/billing path;
+there are no Harvest branches in Arena. Name, company-domain and email inputs do not select
+these Harvest tools. Native LinkedIn routes remain available. Additional adapter categories
+also make the full and company tools candidates in the corresponding public enrichment routes.
+
+
+`_fresh_caller` carries the initiating managed key into each paid step. It rechecks that the key
+is active and still belongs to the same membership and team. A Default-key generation change
+also stops later steps. The snapshot retains key attribution; browser-session runs keep no key.
+This recheck happens before a new call and does not cancel a request already in flight.

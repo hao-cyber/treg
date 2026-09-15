@@ -20,7 +20,13 @@ sources:
   - src/treg/domain/tools/__init__.py
   - src/treg/domain/tools/bindings.py
   - src/treg/domain/tools/bundles.py
+  - src/treg/domain/identity/api_keys.py
+  - src/treg/domain/identity/access.py
+  - src/treg/routers/api_keys.py
+  - tests/test_api_keys.py
   - tests/test_oauth_refresh.py
+  - tests/test_financialdatasets.py
+  - tests/test_key_providers.py
   - src/treg/config.py
 related:
   - architecture/proxy-model.md
@@ -32,14 +38,64 @@ related:
 
 `SUMBLE` uses the standard pasted Bearer-key path and a free technology-search miss probe; garbage-key rejection was verified through the local connection API. See [Sumble](sumble.md).
 
+Financial Datasets uses the standard pasted-key and platform-key paths with a raw `X-API-KEY`
+header. `OAuthProvider.probe_url` points at the smallest practical price-snapshot request and
+`probe_path` remains empty. The absolute URL therefore verifies a pasted key only during connect;
+`_autoprovision_provider_tool` does not persist a recurring health check for this provider.
+The existing `probe_reject_statuses` metadata rejects every normal HTTP result except `200` and
+`402`. Thus, a `402` proves that the credential was recognized but its upstream Credits account is
+empty, while unrelated failures such as `429` and `500` cannot validate a key. This rule applies
+only during connection validation: an ordinary data call still relays a `402` as a failure. No
+shared connection logic, health schema, or Financial-Datasets-only health branch is added.
+Its 13 discovery helpers declare the generic `platform_auth: anonymous` mode. When no team tool or
+stored provider key exists, treg calls those verified public routes with no injected credential.
+If a caller supplies `X-API-KEY` directly, the faithful relay preserves it and Financial Datasets
+can charge that key.
+
 QuickEnrich uses `QUICKENRICH`, a pasted Bearer key on `app.quickenrich.io`. The free
 POST Contact Finder probe rejects invalid keys with HTTP 401 and does not require a positive credit
 balance to accept a successful probe. `platform_key_quickenrich` supplies the separate server-held platform credential.
 No OAuth app or special injector is needed. See the QuickEnrich section in [catalog](catalog.md).
 
-Tier 4 has explicit platform-key slots for MiniMax, OpenRouter and Replicate. The web and async cron
+Tier 4 has explicit platform-key slots for MiniMax, OpenRouter, Replicate, reAPI and PiAPI. The web and async cron
 receive them as environment secrets, and the worker constructs the same platform bindings as the call
 path. Key values are never copied into task records, logs or archive evidence.
+
+## Managed treg API keys
+
+Treg API keys authenticate callers; provider secrets authorize upstream services. These stores are
+separate. New additional human and agent keys start with `treg_`, are returned once, and are stored
+only as SHA-256 hashes plus a safe prefix. A signed identity key has no stored hash. Its stable
+`default_human` row controls that team membership. New human memberships leave the legacy
+`Membership.token_hash` compatibility field empty and return a team-pinned signed default token, so
+they do not manufacture a `legacy_human` row. Existing non-empty hashes retain their migrated rows.
+
+Authentication loads the key first and the live membership second. Disable and revoke therefore
+take effect without changing role, access, cap, or billing data. Revoke is permanent. Rotation
+uses a conditional row update as its cross-process claim, then revokes the old row and links it to
+one new row. The claim also hides the revoked predecessor from the default inventory; its row, key
+events, and Activity snapshots remain available for audit. A competing request receives 409 instead
+of creating another replacement or leaking a database error. The key audit table and Activity
+snapshot contain no complete secret.
+
+The signed human Default key is the exception to replacement-row rotation. Its control row carries
+`default_generation`; the team-pinned token carries the signed `kg` claim. Rotating increments that
+same row and returns the newly derived token, so the prior token fails as `revoked key` while Default
+keys for the user's other teams, random additional keys, agent keys, and browser sessions are unchanged.
+Default keys cannot be revoked: disable/enable is the temporary stop, and rotate is the replacement.
+Newly minted Default keys also carry `scp=team`; their signed `org` is authoritative for resource
+access, so a conflicting `X-Treg-Org` cannot redirect one team's key to another team. Org-less
+`scp=bootstrap` login tokens are seven-day onboarding credentials, not managed API keys.
+
+`last_used_at` is approximate display metadata. Authentication commits its read transaction before
+`api_keys.touch()` schedules a best-effort background update. The process and the conditional UPDATE
+both enforce a five-minute window, the in-process map is bounded, and one writer uses the background
+pool. Requests that share one key do not serialize on an `ApiKey` row write.
+
+Every response that returns a complete caller credential uses `Cache-Control: no-store`. Owners and
+admins can list, inspect Activity, disable, and enable another human's key, and revoke hash-backed
+human keys. Only the assigned human can rotate a Default or additional human key. Admins can rename,
+rotate, revoke, and hide agent keys.
 
 `MILLIONVERIFIER` is a pasted-key Enrichment provider. Both own keys and platform bindings inject
 `api` into the query at `https://api.millionverifier.com`. Its free `/api/v3/credits` probe returns
@@ -217,6 +273,12 @@ module symbols:
   their display label, connect description, and their own configured state. The dashboard and CLI
   consume this metadata instead of mapping provider or method ids themselves. A multi-method
   provider's top-level `configured` value is true when any declared method is configured.
+- `CatalogTarget` and `profile_for_catalog_host()` let a provider opt in to binding a catalog
+  endpoint's optional `host` to an exact provider-approved HTTPS base URL. A target may override
+  the provider's token placement and
+  format, as Diffbot Web Search does for Bearer auth. Catalog data cannot add credential destinations;
+  opted-in provider's resolution rejects an unapproved host before any secret reaches relay or
+  money is reserved. Providers without targets retain their prior primary-base behavior.
 - `consent_notice` — one line the dashboard shows **before** the consent popup opens, for a provider
   whose consent screen names something the user has not seen on treg. Only the Meta family carries one:
   the shared Meta app is registered as **Crewlet**, a sibling product of the same company (Superdesign
@@ -248,7 +310,8 @@ module symbols:
   display can stop calling a connected account free (`catMetered`, [dashboard](../interface/dashboard.md)). A **BYO connect is never metered** — the callback
   stamps `secret.provider` only in registry mode, and that attribution is the whole detection.
 - `auth_kind` = `"oauth"` (treg's app), `"token"` (a user-pasted Bearer token: Slack plus the
-  MiniMax, OpenRouter, and Replicate AI-generation providers),
+  MiniMax, OpenRouter, Replicate and reAPI AI-generation providers; PiAPI pastes an `X-API-Key`
+  and is a `"key"` provider),
   or `"key"` (an **API-key provider** connected by pasting a key: Apollo, PDL,
   Akta, Hunter, Crunchbase, Lusha, Coresignal, Diffbot, The Companies API, LeadMagic on a new
   **Enrichment** shelf, TikHub + Bright Data + Just One API under
@@ -323,8 +386,8 @@ module symbols:
   this. No commit changed, no test failed (nothing in the suite makes a live call), and the two failure
   modes read differently: a version that **never existed** returns an HTML 404, a **sunset** one returns
   a JSON 400 `UNSUPPORTED_VERSION`. `POST /health/run` would surface it on the day it breaks — it probes
-  every credential through the same versioned `probe_path` — but nothing schedules it; `render.yaml`
-  carries only Render's own `healthCheckPath: /meta`. Bump the version in all four places together:
+  every credential through the same versioned `probe_path`, but nothing schedules it by default.
+  Operators may add a health worker to their own deployment. Bump the version in all four places together:
   `oauth_providers.GOOGLE_ADS`, `catalog/google-ads.yaml`, `catalog/google-ads.extended.yaml`, and
   `scripts/catalog_ingest.py:GADS_VERSION`.
 
@@ -409,3 +472,8 @@ platform-provider allow-list is also required. Own keys always take precedence.
 `oauth_providers.CONTACTOUT` verifies against `/v1/stats` and requires `status_code: 200` as well
 as HTTP success. Its binding injects the raw `token` header. Both garbage rejection and valid
 connection creation were tested live; see [ContactOut](contactout.md).
+
+
+## HarvestAPI integration
+
+`HARVESTAPI` uses a pasted `X-API-Key` and internal `/users/my-api-user` probe. The wallet endpoint is not a catalog tool. See [HarvestAPI](harvestapi.md) for own-key priority and platform configuration.

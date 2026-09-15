@@ -73,6 +73,16 @@ def minimax_platform_on(monkeypatch):
     get_settings.cache_clear()
 
 
+@pytest.fixture
+def diffbot_platform_on(monkeypatch):
+    """Enable Diffbot tier 4 without exposing or calling a real provider credential."""
+    monkeypatch.setenv("TREG_PLATFORM_KEY_DIFFBOT", "PLATFORM-DIFFBOT-KEY")
+    monkeypatch.setenv("TREG_PLATFORM_PROVIDERS", "diffbot")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 async def _balance(clients: AsyncClient) -> int:
     org_id = (await clients.get("/orgs")).json()[0]["org_id"]
     return (await clients.get(f"/orgs/{org_id}/balance")).json()["balance_micro"]
@@ -240,6 +250,115 @@ async def test_deny_rules_cover_marketplace_calls(clients: AsyncClient):
 
 
 # ---- tier 4: treg's own key, billed to the org balance ------------------------------------------
+@pytest.mark.parametrize(("endpoint", "params", "target", "charge_micro"), [
+    (
+        "diffbot.x.extract-article",
+        {"url": "https://news.example/article"},
+        ("api.diffbot.com", "/v3/article"),
+        1_196,
+    ),
+    (
+        "diffbot.x.extract-event",
+        {"url": "https://events.example/conference"},
+        ("api.diffbot.com", "/v3/event"),
+        1_196,
+    ),
+    (
+        "diffbot.companies.enrich",
+        {"type": "Organization", "url": "https://company.example"},
+        ("kg.diffbot.com", "/kg/v3/enhance"),
+        29_900,
+    ),
+])
+async def test_diffbot_shared_key_uses_each_catalog_endpoint_host(
+    clients: AsyncClient, diffbot_platform_on, endpoint, params, target, charge_micro,
+):
+    """Exercise extraction and KG through the full host-sensitive HTTP call path."""
+    outbound: list[tuple[str, str]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("token") == "PLATFORM-DIFFBOT-KEY"
+        assert request.headers.get("authorization") is None
+        outbound.append((request.url.host, request.url.path))
+        status = 200 if outbound[-1] == target else 404
+        return httpx.Response(
+            status,
+            stream=httpx.ByteStream(b'{"objects":[{"name":"Synthetic example"}]}'),
+            headers={"content-type": "application/json"},
+        )
+
+    await A.app.state.http.aclose()
+    A.app.state.http = AsyncClient(transport=httpx.MockTransport(upstream))
+    before = await _balance(clients)
+
+    response = await clients.get(f"/call/{endpoint}", params=params)
+
+    assert response.status_code == 200, response.text
+    assert outbound == [target]
+    assert await _balance(clients) == before - charge_micro
+
+
+async def test_diffbot_own_key_uses_web_search_bearer_profile_without_metering(
+    clients: AsyncClient, diffbot_platform_on,
+):
+    await clients.post("/secrets", json={"name": "diffbot", "value": "OWN-DIFFBOT-KEY"})
+    outbound: list[tuple[str, str, str | None, str | None]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        outbound.append((
+            request.url.host,
+            request.url.path,
+            request.headers.get("authorization"),
+            request.url.params.get("token"),
+        ))
+        return httpx.Response(
+            200,
+            stream=httpx.ByteStream(b'{"data":[]}'),
+            headers={"content-type": "application/json"},
+        )
+
+    await A.app.state.http.aclose()
+    A.app.state.http = AsyncClient(transport=httpx.MockTransport(upstream))
+    before = await _balance(clients)
+
+    response = await clients.get(
+        "/call/diffbot.x.web-search", params={"text": "synthetic example"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert outbound == [(
+        "llm.diffbot.com", "/api/v1/web_search/", "Bearer OWN-DIFFBOT-KEY", None,
+    )]
+    assert await _balance(clients) == before
+
+
+async def test_diffbot_unapproved_catalog_host_fails_before_relay_or_reserve(
+    clients: AsyncClient, diffbot_platform_on, monkeypatch,
+):
+    endpoint = catalog_store.load().by_id["diffbot.x.extract-article"]
+    monkeypatch.setitem(endpoint, "host", "credentials.example")
+    called = False
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(500)
+
+    await A.app.state.http.aclose()
+    A.app.state.http = AsyncClient(transport=httpx.MockTransport(upstream))
+    before = await _balance(clients)
+
+    response = await clients.get(
+        "/call/diffbot.x.extract-article",
+        params={"url": "https://news.example/article"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"].startswith("diffbot.x.extract-article declares")
+    assert called is False
+    assert await _balance(clients) == before
+
+
 async def test_tier4_relays_with_the_platform_key_and_charges_the_balance(clients: AsyncClient, platform_on):
     """The keyless first call: no credential in the org, and the endpoint is served anyway — on treg's
     key, with the estimate taken out of the $1 promo balance."""
@@ -491,6 +610,45 @@ def test_body_limit_reads_camel_case_and_nested_pagination_keys():
     # lusha decision-makers: `contactsLimit` caps contacts PER COMPANY and is the whole bill (1 credit
     # each) — without it the route answered 44 rows for microsoft.com, $5.49 in one call (2026-09-02)
     assert call_resolution._body_limit(json.dumps({"companies": [{"domain": "microsoft.com"}], "contactsLimit": 5}).encode()) == 5
+    # lusha people.enrich: `contacts` array must count (feedback #133, org 13545) — without this,
+    # a single-contact lookup fell back to the 20-row default and reserved $4.992 for a $0.2496 call (20x)
+    assert call_resolution._body_limit(json.dumps({"contacts": [{"firstName": "Jane", "lastName": "Doe", "companyDomain": "lusha.com"}], "reveal": ["emails"]}).encode()) == 1
+    assert call_resolution._body_limit(json.dumps({"contacts": [{"firstName": "A"}, {"firstName": "B"}], "reveal": ["emails"]}).encode()) == 2
+
+
+def test_body_limit_counts_lusha_companies_array():
+    """lusha.companies.enrich takes a `companies` array. Without counting it, a single-company lookup
+    estimated at 20 results (the default) instead of 1 — a 20x pricing mismatch."""
+    assert call_resolution._body_limit(json.dumps({"companies": [{"domain": "lusha.com"}]}).encode()) == 1
+    assert call_resolution._body_limit(json.dumps({"companies": [{"domain": "a.com"}, {"domain": "b.com"}, {"domain": "c.com"}]}).encode()) == 3
+
+
+def test_hunter_domain_search_estimate_uses_credit_rounding():
+    """Hunter bills 1 search credit per 10 emails RETURNED, rounded UP — the catalog's `per: 10` prices
+    at $0.00245/record, but Hunter actually charges whole credits. Feedback #116 (org 12770): catalog
+    showed ~$0.00245 but billed ~$0.0245 (10x) because the estimate used linear per-record math
+    while settle used rounded-up credits. The estimate must round up to whole credits too.
+
+    With limit=1: linear estimate was $0.00245, but settle = ceil(1/10) = 1 credit = $0.0245."""
+    credit_micro = 24_500  # $0.0245/credit (fx.yaml, Starter $49/mo / 2,000 credits)
+    # The estimate must round up to whole credits, same as settle does
+    cost = {"type": "per_result", "usd": 0.00245}  # per-record price from cost_view
+    # Default limit (10 for Hunter) → 1 credit
+    est, unit = call_resolution._marketplace_pricing("hunter", "hunter.companies.emails", cost, {}, b"")
+    assert est == credit_micro, f"default limit (10) should reserve 1 whole credit: {est}"
+    assert unit == credit_micro, "unit should be 1 credit"
+    # limit=1 → still 1 credit (rounded up)
+    est_1, _ = call_resolution._marketplace_pricing("hunter", "hunter.companies.emails", cost, {"limit": "1"}, b"")
+    assert est_1 == credit_micro, f"limit=1 should still reserve 1 whole credit (ceil(1/10)=1): {est_1}"
+    # limit=10 → 1 credit
+    est_10, _ = call_resolution._marketplace_pricing("hunter", "hunter.companies.emails", cost, {"limit": "10"}, b"")
+    assert est_10 == credit_micro, f"limit=10 should reserve 1 credit: {est_10}"
+    # limit=11 → 2 credits (rounded up)
+    est_11, _ = call_resolution._marketplace_pricing("hunter", "hunter.companies.emails", cost, {"limit": "11"}, b"")
+    assert est_11 == 2 * credit_micro, f"limit=11 should reserve 2 credits (ceil(11/10)=2): {est_11}"
+    # limit=100 (max) → 10 credits
+    est_100, _ = call_resolution._marketplace_pricing("hunter", "hunter.companies.emails", cost, {"limit": "100"}, b"")
+    assert est_100 == 10 * credit_micro, f"limit=100 should reserve 10 credits: {est_100}"
 
 
 async def test_provider_5xx_releases_the_hold(clients: AsyncClient, platform_on, monkeypatch):
@@ -1023,6 +1181,67 @@ def test_exa_catalog_is_platform_priced():
     assert len(rows) == 10
     assert all(cat.platform_eligible(ep) for ep in rows)
     assert all(cat.cost_view(ep["cost"], "exa")["usd"] > 0 for ep in rows)
+
+
+def test_reapi_and_piapi_catalogs_are_platform_priced():
+    """Both AIGC resellers price in dollars per second or per image, so every generation row
+    converts natively; the free poll utilities are eligible as free routes."""
+    cat = A.catalog_store.load()
+    for provider, count in (("reapi", 6), ("piapi", 6)):
+        rows = cat.for_provider(provider)
+        assert len(rows) == count, provider
+        assert all(cat.platform_eligible(ep) for ep in rows), provider
+    # 480p Seedance 2.5, five seconds: the cheapest video cell on each route
+    assert cat.cost_view(cat.by_id["reapi.video-gen.seedance-2-5"]["cost"], "reapi")["usd_min"] == 0.4744
+    assert cat.cost_view(cat.by_id["piapi.video-gen.seedance-2-5.less-restriction"]["cost"], "piapi")["usd_min"] == 0.825
+
+
+def test_cloro_catalog_is_platform_priced():
+    """cloro prices in credits with a fx.yaml rate, so every curated route converts and is
+    eligible — except the own-account balance read, which tier 4 never serves."""
+    cat = A.catalog_store.load()
+    rows = cat.for_provider("cloro")
+    assert len(rows) == 11
+    own = [ep for ep in rows if ep.get("scope") == "own_account"]
+    assert [ep["id"] for ep in own] == ["cloro.account.usage"]
+    served = [ep for ep in rows if ep.get("scope") != "own_account"]
+    assert all(cat.platform_eligible(ep) for ep in served)
+    # 9 credits × $0.0004 (Hobby rate) — the full-surface ChatGPT call, the dearest route in the file
+    assert cat.cost_view(cat.by_id["cloro.ai-search.chatgpt.scrape"]["cost"], "cloro")["usd"] == 0.0036
+    assert cat.cost_view(cat.by_id["cloro.google.serp.news"]["cost"], "cloro")["usd"] == 0.002
+
+
+def test_cloro_state_targeting_rider_is_reserved():
+    """`state` is a top-level body field priced by a `cost.modifiers` rule (+2 credits on the four
+    engines that support it). The reserve must carry it; before the modifiers path was opened to
+    providers other than Aviato it silently did not (found reviewing #349)."""
+    cat = A.catalog_store.load()
+
+    def price(endpoint_id, body):
+        ep = cat.by_id[endpoint_id]
+        cv = cat.cost_view(ep["cost"], "cloro")
+        return call_resolution._marketplace_pricing("cloro", endpoint_id, cv, {}, json.dumps(body).encode())
+
+    plain = {"prompt": "what is a stock split", "country": "US"}
+    assert price("cloro.ai-search.perplexity.answer", plain) == (2_400, 0)            # 6 credits × $0.0004
+    assert price("cloro.ai-search.perplexity.answer", {**plain, "state": "CA"}) == (3_200, 0)  # 8
+    assert price("cloro.ai-search.chatgpt.scrape", {**plain, "state": "CA"}) == (4_400, 0)     # 11
+    # AI Mode has no state rider and no modifiers block: the plain estimate, untouched
+    assert price("cloro.google.serp.ai_mode", {"prompt": "x", "gl": "US"}) == (2_400, 0)
+
+
+def test_cloro_settles_from_the_response_credit_header():
+    """cloro's body has no billing field; X-Credits-Charged is the exact call charge, and it is
+    absent on the free routes and on a failed extraction (neither is billed) — which settles as
+    unreported rather than as zero."""
+    mk = _mk("cloro", endpoint_id="cloro.ai-search.chatgpt.scrape")
+    assert call_settle._observed_cost_micro(
+        mk, b'{"success": true}', httpx.Headers({"X-Credits-Charged": "7", "X-Credits-Remaining": "37493"})) == 2_800
+    assert call_settle._observed_cost_micro(
+        mk, b'{"success": true}', httpx.Headers({"X-Credits-Charged": "9"})) == 3_600
+    assert call_settle._observed_cost_micro(mk, b'{"success": true}', httpx.Headers()) is None
+    assert call_settle._observed_cost_micro(
+        mk, b'{"success": true}', httpx.Headers({"X-Credits-Charged": "?"})) is None
 
 
 def test_brightdata_estimate_counts_the_body_array():
@@ -2044,7 +2263,8 @@ async def test_trykitt_platform_rejects_non_realtime_before_upstream(clients,mon
         pytest.fail('must reject before relay')
     monkeypatch.setattr(call_service,'relay',fail)
     body={'email':'a@example.com'}
-    if realtime is not None: body['realtime']=realtime
+    if realtime is not None:
+        body['realtime'] = realtime
     before=await _balance(clients)
     r=await clients.post('/call/'+'trykitt.people.email.verify',json=body)
     assert r.status_code==400,r.text

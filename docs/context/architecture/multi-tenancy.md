@@ -15,6 +15,7 @@ sources:
   - src/treg/domain/governance/teams.py
   - src/treg/domain/governance/usage.py
   - src/treg/domain/identity/access.py
+  - src/treg/domain/identity/api_keys.py
   - src/treg/domain/identity/session.py
   - src/treg/domain/identity/promotions.py
   - tests/test_team_limit.py
@@ -73,6 +74,15 @@ Team deletion removes evaluations before their runs through `ORG_SCOPED_MODELS`.
   restricted on upgrade — else the list of allowed tool NAMES) and **`local_run_enabled`** (bool, default
   true); unique `(user_id, org_id)`. One person in N orgs has N memberships (N tokens). `ROLE_RANK` orders
   owner > admin > member.
+- **`ApiKey`** resolves a credential to a membership. The membership is still the only source for
+  role, tool access, project access, local-run permission, daily cap, and billing identity. More
+  keys do not create more quota. A known disabled or revoked key cannot fall back to
+  `Membership.token_hash`. New human memberships use only their signed default key and leave that
+  legacy compatibility field empty; existing hash-backed credentials continue through migration.
+  After membership removal, signed-token resolution checks the detached, revoked Default control so
+  the old token remains unauthorized; a token pinned to a deleted team is invalid rather than an
+  ambiguous missing-team request. A signed Default token also carries the row's team-local generation;
+  rotation increments it on the same row, invalidating the prior token without affecting another team.
 - **`Invite`** — `org_id, email, role, code_hash (idx), status (pending|accepted|revoked), invited_by,
   expires_at, email_token_hash (idx, nullable)`, plus **`tool_access` + `local_run_enabled`** (the access
   to seed onto the membership when accepted — set access at invite time, edit later). Attached to an
@@ -100,8 +110,20 @@ Team deletion removes evaluations before their runs through `ORG_SCOPED_MODELS`.
   (`UniqueConstraint("org_id", "name")`), so two orgs may reuse a name.
 
 ## Enforcement (`domain.identity.access` and `domain.governance.access`)
-- **`require_member`** resolves `X-Treg-Token` → a `Membership` → a `Caller` (`membership, user, org`,
-  with `org_id`/`email`/`role` properties). 401 if the token matches no membership.
+- **`require_member`** resolves a signed default key or a hash-backed managed key → a live
+  `Membership` → a `Caller` (`membership, user, org, api_key`, with
+  `org_id`/`email`/`role` properties). It checks managed state before the legacy membership-hash
+  fallback. It returns 401 for a missing, disabled, or revoked key. Last-used display metadata is a
+  throttled background write after this dependency commits; it never extends the authentication
+  transaction or changes authorization.
+- Newly minted signed human credentials declare their purpose in the signed `scp` claim.
+  `scp=team` is a Default key: its `org` is authoritative, so a conflicting `X-Treg-Org` is rejected
+  instead of charging another team. That response tells older CLI users to run `treg update`, then
+  `treg login`, because those clients can save a team before they obtain its key. `scp=bootstrap` is
+  the short-lived, org-less login credential:
+  it may identify the account for onboarding (list teams, create one, inspect/accept invitations),
+  but `require_member` rejects it even when a caller supplies `X-Treg-Org`. Untyped tokens minted by
+  older releases retain the prior header-first behavior during the compatibility window.
 - **`_role_at_least` + `_can_manage`**: admin/owner may manage any resource in the org; a member only
   what they created (`resource.owner == caller.email`). Update/delete return 404 when the resource is in
   another org, 403 when the role gate fails. **`_require_can_register`** gates create (secrets/tools/
@@ -217,7 +239,8 @@ Team deletion removes evaluations before their runs through `ORG_SCOPED_MODELS`.
 dependencies, role comparison, and machine classification. Session signing and validation live in
 `domain.identity.session`. Two token families share one HMAC key but newly minted credentials carry a
 signed audience: `make_session` creates `aud=session` with a required 7-day `exp`, while
-`make_identity` creates `aud=identity` and copied API keys omit `exp`. `read_session_claims` and
+`make_identity` creates `aud=identity`; copied team keys omit `exp`, while an org-less
+`scp=bootstrap` identity expires after seven days. `read_session_claims` and
 `read_identity_claims` reject the other audience in both directions; `token_version` remains the
 revocation mechanism for either family.
 
@@ -230,9 +253,10 @@ bearer path refuses it once expired rather than reviving an expired cookie.
   — **the user ONLY, no auto personal org**. Every identity door calls
   it (GitHub / Google callbacks, email OTP), so "first proof = registration" is identical. A brand-new
   user therefore lands with **zero teams** and must name + create their first one (the dashboard's
-  mandatory welcome, or `treg org create`); their identity token is user-scoped so it works before any
-  org exists. **`create_org` uses `require_identity`, NOT `require_member`** — else a zero-org user could
-  never make their first team. See [api](../interface/api.md).
+  mandatory welcome, or `treg org create`). Their seven-day bootstrap token works before an org exists
+  but cannot call or read team resources. **`create_org` uses `require_identity`, NOT
+  `require_member`** — else a zero-org user could never make their first team — and returns the new
+  membership's team-scoped Default key. See [api](../interface/api.md).
 - **Code-free invites:** `my_invites` (`GET /invites/mine`, `require_identity`) lists pending invites for
   the caller's proven email, newest creation time first with descending ID breaking timestamp ties; `accept_my_invite` (`POST /invites/{id}/accept`, `require_identity`) joins
   with no code (403 if `invite.email != user.email`, 409 if already a member). The code path stays.
@@ -267,7 +291,8 @@ bearer path refuses it once expired rather than reviving an expired cookie.
   transfer = promote another to owner, then step down), `leave_org` (`POST /orgs/{id}/leave`, self-removal,
   same last-owner guard), `delete_org` (`DELETE /orgs/{id}`, owner-only, cascades every org-scoped row
   through `cascade_delete_org` / `ORG_SCOPED_MODELS` in `domain/governance/teams.py` - including any
-  pending `AdConversion`: a queued conversion belongs to the team it would be attributed to).
+  pending `AdConversion`: a queued conversion belongs to the team it would be attributed to, and
+  `Media`: hosted reference files would otherwise outlive the team until their TTL).
   **That list is the only one.** Owner delete, admin force-delete, the landing-sandbox reaper and the
   demo reset all go through it; `test_org_delete_clears_EVERY_org_scoped_table` walks the models module
   for anything carrying `org_id` and also refuses a reaper that keeps a private copy. The sandbox reaper
@@ -337,3 +362,24 @@ a concurrent insert loser returns the existing user without marking it new. Emai
 GitHub/Google auth pass that collection to `track_signup` **after their commit**, emitting
 `signup_completed` only for new accounts. The optional entry-surface cookie is analytics metadata,
 allowlisted by `analytics.funnel_surface`; it never affects authentication or team access.
+
+
+## Released CLI compatibility
+
+The unmodified PyPI CLIs 0.16.0 and 0.19.0 can use existing saved tokens, complete browser login,
+and exchange Default keys with `org use`. Their email flow discards the browser cookie and would
+save a restricted bootstrap token. Their team-create and identity-mode invite flows keep the
+previous token after selecting the new team. A scoped Default key must still reject that mismatch.
+
+`routers.auth_helpers.require_managed_cli` stops these known old-client requests with HTTP 426
+before issuing email credentials, creating a team, or consuming an invite. The response tells the
+user to run `treg update` and retry. Current CLI requests send `X-Treg-Key-Protocol: 1` and save the
+returned team's key. The legacy-client hint is the released CLI's `python-httpx/` User-Agent plus
+`ngrok-skip-browser-warning: 1`, without that protocol marker. It is a compatibility check, not an
+authorization boundary or a universal client-version detector. Browsers and generic API clients
+retain their API behavior; omitting or forging the hint never relaxes token restrictions.
+
+Existing unscoped tokens retain their old team-create behavior. Fresh email login and team changes
+with typed credentials require the updated CLI on the affected paths. This is a controlled upgrade
+requirement, not full support for all fresh-login flows in old clients. The released-wheel test in
+`test_released_cli_compat` checks that refusal preserves config bytes and the prior usable team.

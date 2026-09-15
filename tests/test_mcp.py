@@ -135,6 +135,21 @@ async def test_catalog_search_returns_priced_results(clients):
     assert "usd_per_call" in first and "no_key_needed" in first
 
 
+async def test_catalog_get_quotes_hunter_domain_search_as_one_credit(clients):
+    """Feedback #201: usd_per_call must be the live 1-credit charge, not the 1/10 slice."""
+    token = (await clients.post("/users", json={"email": "hunter-price@superdesign.dev"})).json()["token"]
+    async with mcp_session(clients) as c:
+        got = await _call_tool(c, "catalog_get",
+                               {"endpoint_id": "hunter.companies.emails"}, token=token)
+        search = await _call_tool(c, "catalog_search",
+                                  {"query": "hunter domain search emails", "limit": 25}, token=token)
+    assert got["usd_per_call"] == 0.0245
+    assert got["endpoint"]["cost"]["usd"] == 0.00245
+    assert got["endpoint"]["cost"]["display_usd"] == 0.0245
+    row = next(r for r in search["results"] if r["endpoint_id"] == "hunter.companies.emails")
+    assert row["usd_per_call"] == 0.0245
+
+
 async def test_no_key_needed_is_false_when_the_deploy_holds_no_key(clients):
     """`no_key_needed` must mean "THIS deploy will serve it on treg's key", not "the row is priced".
     The test env configures no platform keys at all, so every result — however eligible its price —
@@ -229,17 +244,17 @@ async def test_a_real_token_reads_its_OWN_balance(clients):
     assert out["balance_usd"] >= 0
 
 
-async def test_an_IDENTITY_token_resolves_its_team(clients):
-    """The bug production found. There are two kinds of token: a PER-ORG token (`treg org agent-new`)
-    has its team baked in and `/auth/me` reports it; an IDENTITY token (`treg login` — what most
-    people actually hold) belongs to a person who may be in several teams, so `/auth/me` reports no
-    org and every `/orgs/{id}/…` route must be told which one. Resolving only the first kind meant
-    `balance` answered "could not resolve the team" for the commonest token there is."""
+async def test_a_team_default_token_resolves_its_team(clients):
+    """A CLI login with a chosen team receives that team's Default key, so MCP can resolve billing
+    without a second X-Treg-Org header."""
     r = await clients.post("/users", json={"email": "identity-user@superdesign.dev"})
     per_org = r.json()["token"]
     clients.headers["X-Treg-Token"] = per_org
-    identity = (await clients.get("/auth/cli-token")).json()["token"]
-    assert identity != per_org
+    slug = (await clients.get("/orgs")).json()[0]["slug"]
+    identity = (await clients.get(
+        "/auth/cli-token", headers={"X-Treg-Org": slug},
+    )).json()["token"]
+    assert identity == per_org  # deterministic Default key for this membership generation
 
     async with mcp_session(clients) as c:
         out = await _call_tool(c, "balance", {}, token=identity)
@@ -1131,7 +1146,10 @@ async def test_call_resolves_the_team_for_an_identity_token(clients):
     r = await clients.post("/users", json={"email": "call-identity@superdesign.dev"})
     per_org = r.json()["token"]
     clients.headers["X-Treg-Token"] = per_org
-    identity = (await clients.get("/auth/cli-token")).json()["token"]
+    slug = (await clients.get("/orgs")).json()[0]["slug"]
+    identity = (await clients.get(
+        "/auth/cli-token", headers={"X-Treg-Org": slug},
+    )).json()["token"]
     made = await clients.post("/tools", json={"name": "echo2", "base_url": "http://upstream"})
     assert made.status_code == 200, made.text
 

@@ -62,8 +62,9 @@ archive body PUT chain because it persists the paid response outside any DB tran
 
 The separate `test-postgres` job runs its database-sensitive subset serially against Postgres 16;
 it uses unbuffered Python output and a 15-minute job budget so a slow test remains diagnosable. The
-subset includes agent attribution, credential health, local-run reporting and ads-conversion coverage
-so naive-UTC assumptions are exercised by asyncpg rather than hidden by SQLite's permissive adapter.
+subset includes agent attribution, managed API-key lifecycle and concurrency, credential health,
+local-run reporting and ads-conversion coverage so naive-UTC assumptions are exercised by asyncpg
+rather than hidden by SQLite's permissive adapter.
 
 The required `gitleaks` job scans the complete history reachable from checked-out `HEAD` with
 `--log-opts="HEAD"`. On pull requests, checkout supplies the merge commit, so both the base and

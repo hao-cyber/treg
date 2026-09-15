@@ -40,7 +40,7 @@ async def c():
     app.state.http = AsyncClient(transport=ASGITransport(app=make_upstream()), base_url="http://upstream")
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://registry",
-        headers={"ngrok-skip-browser-warning": "1"},
+        headers={"ngrok-skip-browser-warning": "1", "X-Treg-Key-Protocol": "1"},
     ) as client:
         yield client
     await app.state.http.aclose()

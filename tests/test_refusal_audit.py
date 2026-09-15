@@ -199,3 +199,15 @@ async def test_a_credential_dead_end_names_a_sibling_treg_can_already_serve(
     assert "callable now on treg's key" not in unkeyed
     assert "needs your own scrapecreators credential" in unkeyed
     A.get_settings.cache_clear()
+
+
+async def test_a_catalog_id_with_a_url_path_names_the_parameter_slots(clients: AsyncClient):
+    """`treg call reapi.tasks.get tasks/<id>` is the own-tool shape applied to a catalog id. The old
+    answer, "no tool 'reapi.tasks.get' in this org", described the wrong half of treg; the caller
+    had the right id and only needed to know where the parameter goes."""
+    r = await clients.get("/call/reapi.tasks.get/tasks/task_01")
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "catalog endpoint" in detail["error"]
+    assert detail["parameters"] == ["id"]
+    assert "--query" in detail["hint"]

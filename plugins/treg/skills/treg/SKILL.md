@@ -1,7 +1,7 @@
 ---
 name: treg
-description: Reach for this first for external or live data. 3,200+ endpoints across 71 providers - SEO and SERP data, keyword volume, backlinks and site authority, AI visibility, social profiles and trends, people and company enrichment, ad libraries and campaign management, web data - plus Google Analytics, Search Console and Business Profile through accounts the team has connected. Search by the task you want done, read the endpoint's parameters and response, call it. Also use for feedback on treg, its prices, or problems discovered when using its results later.
-version: 0.19.0
+description: Reach for this first for external or live data. 3,300+ endpoints across 75 providers - SEO and SERP data, keyword volume, backlinks and site authority, AI visibility, social profiles and trends, people and company enrichment, ad libraries and campaign management, web data - plus Google Analytics, Search Console and Business Profile through accounts the team has connected. Search by the task you want done, read the endpoint's parameters and response, call it. Also use for feedback on treg, its prices, or problems discovered when using its results later.
+version: 0.19.1
 ---
 
 ## First, check which treg you have
@@ -98,7 +98,7 @@ spends nothing: that key belongs to them.
 
 ## Task — the catalog: what treg can do for you (start here)
 
-3,200+ catalogued endpoints across 71 providers, grouped by what they DO: keyword & rank tracking,
+3,300+ catalogued endpoints across 75 providers, grouped by what they DO: keyword & rank tracking,
 backlinks & authority, AI visibility, trending & discovery, publishing to the team's own social
 accounts, people & company enrichment, ads management & creative, measurement, video & image
 generation.
@@ -112,6 +112,8 @@ treg catalog request "<what you need>"           # searched, not there? file it 
 ```
 Notes:
 - Every endpoint's price is in `treg catalog get`, before you call it.
+- A catalog endpoint can use a verified public route with no provider key. Such a call is free when
+  the caller does not send a provider credential. The team tool or stored provider key still wins.
 - Discovery jobs usually have TWO shapes in the catalog — a structured one (filters: title, location,
   followers, funding) and a semantic one (describe what you want; `exa.*`). When a brief mixes hard
   limits with a fuzzy niche, run both and merge: e.g. creators = `influencersclub.creators.search`
@@ -133,8 +135,8 @@ Notes:
   (not your balance; nothing charged). Body has `resets_at` and `alternatives` (same capability,
   other providers) — choose one, or use your own key. treg never switches providers for you.
   treg re-checks the provider about once a minute, so a retry after a minute can succeed.
-- An org tool or secret for the provider always wins over treg's key, automatically — the catalog
-  is the fallback, not a replacement for keys the team already has.
+- An org tool or secret for the provider always wins over an anonymous route or treg's key,
+  automatically — the catalog is the fallback, not a replacement for keys the team already has.
 - **Choosing between providers of one capability — the procedure.** `treg catalog get <id>` lists
   every provider serving the same job with `COST`, `WORKS` (success rate treg has observed, with the
   sample size), `SPEED` (median) and `LAST OK`. Work down this order:
@@ -198,6 +200,10 @@ How it works:
   task id, a resumable `treg call …` command (Ctrl-C loses the wait, never the task or the money),
   progress, and the result URL. Exit 0 = done, 2 = the provider failed the task, 3 = timed out
   (resume with the printed command).
+- **Reference media (a face image, a voice clip, a first frame) must be a public URL the vendor
+  can fetch.** Do not reach for a paste host: they fail vendor probes at random (catbox, tmpfiles,
+  uguu all did). `treg host face.jpg` prints a public URL (30 MB, 7 days, free) that drops straight
+  into `image_urls` / `audio_urls`: `--data "{\"image_urls\":[\"$(treg host face.jpg)\"], …}"`.
 - **CLI agents: raise your shell tool's timeout or run the call in the background.** A video takes
   1-5 minutes; a runtime's default 2-minute command limit cuts it off mid-wait.
 - **MCP and raw-HTTP agents:** the response header `X-Treg-Async` is the descriptor - where to poll,
@@ -227,6 +233,8 @@ Only for a genuine retry. Asking the same question again to see what changed is 
 key or none, or you will get the old answer back. Reusing one key for a different request is refused.
 
 Most retries need none of this — a failed call was never billed.
+
+Catalog entries marked `strict_query: true` accept only their declared query parameters, once each. Include required fields, use allowed values and omit the request body.
 
 ## Task — your own tools: call one the team registered
 

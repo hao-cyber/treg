@@ -25,9 +25,9 @@ accounts and bills you fractions of a cent per call.
 Two kinds of tool answer to the same token, through the same `/call/`:
 
 - **The catalog** — curated external endpoints, callable by id. If nobody on your team holds a key
-  for that provider, treg serves eligible endpoints **on its own key**, metered per call against
-  the team's prepaid balance (**$1.00 free** once per new verified account, on an eligible team). No provider signup, no
-  subscription.
+  for that provider, treg serves eligible endpoints through a verified public route that needs no
+  provider key, when available, or on treg's own key. Anonymous calls are free; own-key calls are
+  metered against the team's prepaid balance. No provider signup or subscription.
 - **Your own tools** — anything a teammate registered: an internal service, a paid API account, an
   OAuth connection, a vendor CLI, a SKILL.md. Callable by the whole team, with the credential held
   server-side. **Your own key always wins over treg's, and those calls are never metered.** One
@@ -57,6 +57,8 @@ if you don't):
 
     curl "{BASE}/call/tikhub.tiktok.user.profile?uniqueId=tiktok" \
       -H "X-Treg-Token: $TREG_TOKEN"
+
+Catalog entries marked `strict_query: true` accept only declared query parameters, once each, with required fields and allowed values enforced; omit the request body. Rejected inputs are not forwarded.
 
 **One of your own tools** — take the real upstream URL you would normally call and prefix it; treg
 resolves the tool by host and injects the credential:
@@ -171,9 +173,13 @@ your own credential always beats treg's, so connecting a key you already pay for
 free of the balance rather than duplicating them.
 1. the org registered its own tool for that provider → that tool, that key;
 2. the org stored a secret for the provider → injected via a virtual tool;
-3. neither → **treg's own key**, billed per call to the team's prepaid balance. Fractions of a
+3. neither, and the endpoint has a verified public route → **no provider key**, free;
+4. otherwise → **treg's own key**, billed per call to the team's prepaid balance. Fractions of a
    cent (a TikTok profile is ~$0.001); new verified accounts receive **$1.00 free once**, when creating an eligible team. No provider
    signup, no subscription.
+
+The anonymous price assumes the caller does not send a provider credential header. The faithful
+relay preserves caller headers, so a caller-supplied provider key can use that key's credits.
 
 A few flat-fee providers carry a rate **treg set** rather than one the vendor published (the vendor
 sells a subscription, so no per-call price exists). Those rates state the vendor's fee and the volume
@@ -478,6 +484,8 @@ are both supported; you do not need to pre-arrange anything with us.
     treg call <tool> <path>  |  treg call <full-url>     proxy an HTTP call (named or agent-native)
     treg call <endpoint-id> --await [--timeout N] a catalog call that is an async task (generation):
                                                   submit, poll, print the final response (default 900 s)
+    treg host <file> [--content-type T]           host a reference image/audio/video at a public URL a
+                                                  vendor can fetch (30 MB, 7 days, free) — for image_urls / audio_urls
     treg calls [--limit N]                        the proxied-call audit log
     treg audit [--limit N] [--calls | --runs]     calls + CLI runs in one log; generation tasks carry
                                                   their state and result link

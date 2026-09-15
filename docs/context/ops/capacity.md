@@ -1,6 +1,6 @@
 ---
 title: Provider capacity — knowing what treg's own vendor accounts have left
-status: shipped (steps B–F built; production rollout = the shadow week, then TREG_OVERFLOW_MODE=on)
+status: shipped
 sources:
   - src/treg/domain/capacity/__init__.py
   - src/treg/domain/capacity/collectors.py
@@ -34,6 +34,7 @@ sources:
   - src/treg/alembic/versions/0005_capacity_policy_snapshot.py
   - tests/test_capacity_know.py
   - tests/test_capacity_collectors.py
+  - tests/test_financialdatasets.py
 related:
   - architecture/data-model.md
   - architecture/money.md
@@ -45,19 +46,36 @@ related:
 
 `collectors._sumble` reads `credits_remaining` from a free technology-search miss. Its monthly allowance and optional vendor top-ups remain separate from per-call pricing; no renewal date or auto-funding status is assumed. See [Sumble](../architecture/sumble.md).
 
-**Problem.** Tier 4 serves ~2,850 catalog endpoints on treg's own vendor keys. When one of *our*
-accounts runs dry, every caller on that endpoint inherits a 402 that isn't theirs to fix — 4,604
-such errors in the 30 days to 2026-08-26, almost all on the enrichment (money) workload. The plan
-(`docs/PROVIDER-CAPACITY-PLAN.md`, local) has three layers: **know** the runway, **fund** before it
-dies, **protect** the call when it dies anyway (refuse-before-reserve, overflow through an
-aggregator on the *same* endpoint, typed 503). This fragment covers what is built: **know**.
+Financial Datasets uses the existing capacity path with `_KNOWN` policy
+`credits / auto_recharge / manual`. The official API publishes no free balance or usage endpoint,
+so `NO_BALANCE_API` reports its upstream remainder as `no API`; the dashboard is not scraped and a
+paid data request is not scheduled as a meter. Its typed platform-key setting makes it appear in
+`all_platform_providers()` and therefore in `scripts/provider_balances.py` without provider-specific
+script logic. treg continues to report its own ledger-estimated spend, billed amount, and call count.
+The shared bare HTTP 402 balance-exhaustion signature and strike/lock lifecycle apply to platform
+calls; own-key calls remain outside capacity decisions.
+
+Its `platform_auth: anonymous` discovery calls are authenticated treg team calls, not a public
+internet proxy. The normal tool ACL, deny rules, and a configured member `daily_call_cap` apply, but
+the default member cap is unlimited and the shared-key provider spacer applies only to the
+`platform` tier. An anonymous upstream 429 or edge block is therefore relayed without marking the
+platform account. Heavy anonymous traffic can still harm the shared egress address and disrupt paid
+calls to the same provider. The immediate kill switch is removal of `financialdatasets` from
+`TREG_PLATFORM_PROVIDERS`, which stops anonymous and platform-key offers while leaving team BYOK
+credentials first and usable. A default anonymous-provider throttle is not shipped in this change.
+
+**Problem.** When a registry-owned vendor account runs dry, callers receive an upstream refusal they
+cannot fix themselves. Capacity handling has three layers: **know** the runway, **fund** before it
+dies, and **protect** the call when it dies anyway through refusal before reserve, same-endpoint
+overflow, and a typed 503. Live account state and production observations belong in the private
+[provider-capacity runbook](https://github.com/superdesigndev/treg-internal/blob/main/docs/production/provider-capacity.md).
 
 Scope: treg-owned platform credentials only. Tiers 1/2 (a caller's own tool or key) are never
 consulted or affected by anything here.
 
 MillionVerifier's platform slot has an acknowledged exhaustion-signature gap in
-`tests/test_capacity_overflow_routes.py::_UNRECORDED_SIGNATURE`: the supplied promotional account
-has not been exhausted. Its balance collector reads `credits` from the free `/api/v3/credits`
+`tests/test_capacity_overflow_routes.py::_UNRECORDED_SIGNATURE`: no verified exhaustion response is
+available. Its balance collector reads `credits` from the free `/api/v3/credits`
 endpoint using query auth `api`. Both the balance script and sweep use this collector; it does
 not add `bulk_credits` to the balance. No overflow route is claimed. Verify the funded
 account's empty-credit response before adding a signature or enabling overflow.
@@ -85,7 +103,7 @@ we did not exhaust the trial to manufacture evidence. No overflow route is claim
 - **`collectors.py`** — the providers' *free* balance/quota calls (`coroutine(client, key) →
   {value, unit, note}`), shared with `scripts/provider_balances.py`. Providers such as DataForSEO,
   TikHub, Brightdata, and Kitt AI report balances in USD; other meters include credits, rows, and searches. `NO_BALANCE_API`
-  names the 7 providers that publish no meter (dashboard-only) so they read as "no API", never as a
+  names the 8 providers that publish no meter (dashboard-only) so they read as "no API", never as a
   broken key.
   `provider_balance()` never raises — a failure is a row. It reads the *setting*, not
   `platform_key_for`: the tier-4 allow-list is a serving kill switch, and a provider just switched
@@ -118,11 +136,11 @@ we did not exhaust the trial to manufacture evidence. No overflow route is claim
 `treg-worker capacity sweep [--only a,b] [--json]` (`src/treg/worker.py`, console script in the
 `[server]` extra). It is deliberately **not** a `treg` subcommand: the light CLI may not import the
 DB stack (import-linter contract), and the sweep needs the platform keys in the env plus outbound
-third-party calls, which are worker-profile work — never dataplane lifespan work. In production it
-is a **Render cron job** (`treg-capacity-sweep` in `render.yaml`, hourly) that pulls its env from
-the web service via `fromService`; startup calls read-only `verify_db()` and refuses a missing or stale
-schema. `scripts/provider_balances.py` remains the by-hand reconciliation view (balance beside
-ledger spend) over the same collectors.
+third-party calls, which are worker-profile work and never dataplane lifespan work. Operators schedule
+it in a worker environment containing the required provider keys. Startup calls read-only
+`verify_db()` and refuses a missing or stale schema. `scripts/provider_balances.py` remains the
+by-hand reconciliation view over the same collectors. The hosted schedule and service wiring are
+documented privately.
 
 ## Data
 
@@ -167,32 +185,26 @@ pays the aggregator's real price, 0% markup, disclosed in-band when it ships (st
   $0.00598 per creator, a request for one creator is ineligible and two or more qualify. The
   request is never enlarged to qualify. Other unit mismatches remain disabled. A fallback charges
   the aggregator's actual flat fee, including an empty page, rather than multiplying by results.
-- **The seed** — `overflow_seed.json`: the 461 candidate pairs from the 2026-08-26 mapping run.
-  Its original 145 verification stamps recorded identical direct/relay body shapes and in-band
-  price matching list price. At the mapping date, `treg-worker overflow sync` enabled **113** of
-  those 145 (the historical baseline is pinned by test); the rest were off for a named reason —
-  23 were our per-result price vs the aggregator's per-call
-  price (an open decision, plan §7), 7 are not platform-eligible, the remainder have no aggregator
-  price, a 56× ratio, or a barred provider. The enabled count decays to 0 after 7 days without
-  `treg-worker overflow verify`. A separate 2026-09-08 live comparison adds ten verified
-  Influencers Club routes (discovery, similar creators, audience overlap, full/raw enrichment,
-  posts, post details, socials, languages and audience interests). The verification record is
+- **The seed** - `overflow_seed.json` contains candidate mappings and recorded verification evidence.
+  Tests pin its historical baseline and expiry behavior. Enabled routes decay after seven days
+  without `treg-worker overflow verify`. The Influencers Club verification record is
   `tests/fixtures/aggregators/verification/influencersclub.json`; a redacted discovery envelope is
   `tests/fixtures/aggregators/orthogonal_influencersclub_search.json`. Email enrichment remains
   unverified because its catalog entry has no test request; profile/analytics enrichment and
-  parameterized locations have no mapped fallback. The August baseline test keeps its original
-  timestamps; `test_live_verified_seed_enables_ten_routes_and_expires` pins the September addition.
-- **`signatures.py`** — the signature table: what a provider's error body means for OUR account
-  (`balance` / `quota` → exhausted; `burst` → smoothed, never exhausted; `unknown` 429 → logged).
+  parameterized locations have no mapped fallback.
+- **`signatures.py`** - the signature table: what a provider's error body means for the registry
+  account (`balance` / `quota` means exhausted, `burst` is smoothed but never exhausted, and an
+  `unknown` 429 is logged).
   Lusha's "Daily" 429 and Hunter's "per billing period" 429 are quota exhaustion wearing a 429;
-  a `retry-after ≤ 60 s` is a burst. Apollo says "out of credits" with a **422** ("Insufficient
-  credits"), recorded after 2026-09-01: eleven hours of `people.enrich` 422s with overflow on and
-  not one attempt, because no row matched. Moz says it with a **403** `{"issue": "insufficient-quota"}`
-  (`quota`: the row allowance resets on Moz's billing day, which the body does not name → default
-  lock), recorded after 2026-09-04: 115 of one org's calls went upstream to the spent key and came
-  back 403, and "quota" alone is not a tripwire word so nothing was even logged. Influencers Club's
+  a `retry-after ≤ 60 s` is a burst. cloro says it with a **403** `error.code INSUFFICIENT_CREDITS`
+  (from its OpenAPI spec, 2026-09-07 — documented, not yet observed); its 429s are concurrency /
+  rate bursts with `X-RateLimit-*` headers and the allowance resets monthly at the
+  `cycleResetsAt` that `GET /v1/credits` reports. Apollo says "out of credits" with a **422** and Moz uses a
+  **403** `{"issue": "insufficient-quota"}`. Influencers Club's
   documented HTTP 429 `Discovery API credit limit reached` is an endpoint quota signal; ordinary
-  per-minute 429s with Retry-After remain bursts. HTTP 402 still uses the shared balance signature.
+  per-minute 429s with Retry-After remain bursts. reAPI's empty prepaid balance is a **402**
+  `error.code 30001 "Insufficient credits. Required: N"` (observed 2026-09-14); PiAPI's wallet
+  exhaustion is acknowledged unobserved. HTTP 402 still uses the shared balance signature.
   Two guards against
   the next such vendor: `unrecorded`,
   a signal kind for a 4xx no row matched whose body still names credits/quota/balance (pattern =
@@ -256,8 +268,8 @@ pays the aggregator's real price, 0% markup, disclosed in-band when it ships (st
   a schedule's failure notification means something and one timeout does not trip it. A vendor
   pool dry on the aggregator's side (`vendor_dry`) is theirs to refill: it counts under
   "aggregator errors" in the summary line and never fails the run by itself.
-  Spends real money; needs the aggregator keys in the env - a Render job, never the dataplane.
-  How it is scheduled and run by hand is in `ops/deploy.md` § Worker commands.
+  It spends real money, needs aggregator keys in the environment, and runs as a worker job rather
+  than in the dataplane. Hosted scheduling and manual operation are documented privately.
 
 ## Protect, part one (step D) — refuse before reserve
 
@@ -289,8 +301,7 @@ the policy table. `rate_pressure` alerting is step C.
 ## Overflow, the child cycle (step E) — off by default
 
 `application/call/overflow.py` is documented in `architecture/proxy-model.md` § Overflow. Operating
-it: `TREG_OVERFLOW_MODE` = `off` (default) | `shadow` | `on`; `TREG_OVERFLOW_DAILY_BUDGET_USD` (code
-default 20; production's value is set in treg-internal's Blueprint, $500 at the time of writing)
+it: `TREG_OVERFLOW_MODE` = `off` (default) | `shadow` | `on`; `TREG_OVERFLOW_DAILY_BUDGET_USD`
 per aggregator per UTC day is a hard admission cap backed by `OverflowSpend`. Before either an
 `on` call or a `shadow` probe goes to the network, a conditional atomic upsert reserves the route's
 estimated micro-USD only if the resulting daily total fits under the cap. Completion reconciles the
@@ -300,13 +311,12 @@ estimate. Once network I/O has started, a timeout, disconnect, parser crash, can
 other outcome without a known actual fee keeps the estimate reserved. A process crash after the
 reservation commit can do the same; that bias is deliberately conservative because it reduces later
 service instead of allowing excess prepaid spend.
-The aggregator keys `TREG_OVERFLOW_KEY_*` live in the web service env (the cron pulls them). The
+The aggregator keys `TREG_OVERFLOW_KEY_*` live only in the service or worker secret environment. The
 route view (`routes_view.py`) is the call path's
 60 s copy of the enabled `OverflowRoute` rows; `overflow sync` / `overflow verify` are the only
-writers. **Rollout (plan §5):** run `shadow` for a week with routes enabled — every probe logs
-`overflow SHADOW <endpoint> via <aggregator>: … shape …` and lands a child audit row
-(`credential_tier=platform-overflow`, `error_response="treg overflow: shadow"`) — then switch to
-`on` (step F, which also adds the org opt-out and amends the charter).
+writers. Shadow probes log their route and shape and write a child audit row with
+`credential_tier=platform-overflow` and `error_response="treg overflow: shadow"`. Production
+rollout duration, monitoring and mode changes belong in the private runbook.
 Overflow remains advisory across its full attempt: an unexpected budget, adapter, capacity-mark,
 or settlement-path failure is logged, any reserved child hold is released, and the caller falls
 back to the direct vendor response. A skip-direct call has no direct response, so the same fallback
@@ -329,14 +339,10 @@ post-failure child cycle and the resolver's skip-direct rung); an opted-out team
 Own keys are never relayed regardless. The charter's "not built" row, `llms.txt`, `skill.md` (+
 plugin), `README.md` and `USAGE.md` now say what treg may do and how it discloses it.
 
-**Rollout runbook (Jason):** 1. set `TREG_OVERFLOW_KEY_ORTHOGONAL` / `_MONID` (rotated keys) in the
-Render web service; 2. `treg-worker overflow sync` (recently verified eligible routes enable; `--live` also
-refreshes prices) and schedule `treg-worker overflow verify` weekly (routes decay off after 7 days
-without it); 3. `TREG_OVERFLOW_MODE=shadow` for a week — watch the `overflow SHADOW` log lines and
-the `platform-overflow` audit rows for shape mismatches and the daily `OverflowSpend`; 4.
-`TREG_OVERFLOW_MODE=on`. Keep the Orthogonal balance ≤ \$20 (ToS risk accepted 2026-08-26).
-Not built: the `overflow_masking` alert (step C, gated on the money-funding-transactions debt) —
-until then, `OverflowSpend` per day is the masking signal to read by hand.
+The production rollout, account balances, verification schedule and rollback procedure are in the
+private [provider-capacity runbook](https://github.com/superdesigndev/treg-internal/blob/main/docs/production/provider-capacity.md).
+Not built: the `overflow_masking` alert, gated on the money-funding-transactions debt. Until it is
+built, operators must monitor `OverflowSpend` directly.
 
 ## Not built yet (plan step C)
 
@@ -347,7 +353,7 @@ when the account is marked exhausted).
 
 ## Kitt AI capacity
 
-`collectors._trykitt` reads `/credit` in USD. The funded account uses the common
+`collectors._trykitt` reads `/credit` in USD. A funded account uses the common
 `latest_state` policy: a fresh zero balance marks it exhausted. Free Forever calls
 worked at zero before funding, but paid exhaustion has not been tested. That old
 free-plan observation does not override the paid account's balance policy.
@@ -364,8 +370,8 @@ results varied, so no numeric free-plan concurrency/rate limit is configured.
 
 `collectors._contactout` exposes the three raw credit pools through an informational observation,
 not a scalar balance. `snapshot_from` and `latest_state` preserve it without marking the provider
-exhausted. Prepaid quotas are already remaining credits. The pools are independent; the designated
-account manager monitors usage and arranges top-ups. Stats freshness remains unconfirmed; treg
+exhausted. Prepaid quotas are already remaining credits. The pools are independent and require
+separate operator monitoring and top-ups. Stats freshness remains unconfirmed; treg
 keeps the existing sweep cadence and does not assume behavior at zero credits. See
 [ContactOut](../architecture/contactout.md).
 
@@ -373,5 +379,5 @@ ContactOut overflow now has verified routes on Orthogonal and Monid, using the s
 expiry, opt-out and budget controls. Its documented out-of-credit 403 is endpoint-scoped quota,
 not a provider-wide balance lock. See the ContactOut fragment for enabled coverage and the paid
 `scripts/contactout_overflow_verify.py --budget-usd 10 --apply` renewal command; nonexistent static
-catalog examples cannot renew successful contact checks. Production policy/mode changes and the
-weekly renewal schedule remain rollout actions, not changes applied by this PR.
+catalog examples cannot renew successful contact checks. Hosted policy, mode and renewal scheduling
+remain private operational state.

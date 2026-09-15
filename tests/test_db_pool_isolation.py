@@ -40,6 +40,7 @@ EXPECTED_MAKERS: dict[str, set[str]] = {
     "application/arena_verification_insights.py": {API},  # explicit aggregate publication, no worker
 
     "application/feedback.py": {API},  # synchronous intake; admin reads use get_admin_session
+    "application/media.py": {API},  # `treg host`: one short write, one short read, no upstream wait
 
     "application/referrals.py": {API}, "application/signup.py": {API},
     "application/onboard/__init__.py": {API},
@@ -50,6 +51,7 @@ EXPECTED_MAKERS: dict[str, set[str]] = {
     "application/call/settle.py": {API},
     "domain/capacity/marks.py": {API}, "domain/capacity/routes_view.py": {API},
     "domain/capacity/view.py": {API},
+    "domain/identity/api_keys.py": {BACKGROUND},
     # `treg-worker` is its own process; it shares the API pool because nothing else is running in it.
     "worker.py": {API},
     # Staff pages take their pool through `Depends(get_admin_session)`, not a maker import; the one
@@ -156,6 +158,7 @@ def _background_sites(tree):
 
 
 BACKGROUND_SITES = {
+    "domain/identity/api_keys.py:_write_last_used": "api_keys last used",
     "bootstrap.py:_lifespan.lifespan": "adsconv.worker",
     "bootstrap.py:create_app": "catalog observation refresh",
     "audit.py:_write_batch": "audit._flush",

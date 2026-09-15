@@ -135,6 +135,21 @@ async def _resolve_call(rest: str, caller: Caller, db: AsyncSession) -> Resolved
     ).scalar_one_or_none()
     if tool is None:
         cat = catalog_store.load()
+        # An EXACT catalog id followed by a URL path (`reapi.tasks.get/tasks/<id>`) is the own-tool
+        # shape applied to the catalog half: the caller had the right id and wrote the vendor's path
+        # by hand. "no tool in this org" sends them hunting in the wrong half of treg; name the
+        # endpoint's real parameter slots instead so the next call is the right one.
+        if path and (ep := cat.by_id.get(name)) is not None:
+            inp = ep.get("input") or {}
+            slots = sorted({k for sec in ("pathParams", "queryParams", "query", "body")
+                            for k in (inp.get(sec) or {})})
+            raise ResolutionFailed(
+                "invalid_target", status_code=400, detail={
+                    "error": f"{name!r} is a catalog endpoint and takes no URL path",
+                    "hint": (f"pass parameters as --query K=V (path and query params) or --data "
+                             f"'{{…}}' (body): treg call {name} --query <k>=<v>"
+                             + (f"; parameters: {', '.join(slots)}" if slots else "")),
+                    "parameters": slots})
         # A DOTTED name that reached here was meant to be a catalog endpoint id and missed — a
         # near-miss id, most often one segment off. Answering "no tool 'lusha.companies-signals' in
         # this org" describes the wrong half of treg and leaves the caller nothing to try; naming
@@ -298,7 +313,7 @@ class MarketplaceCall:
     consumed: set[str]              # query params eaten by `{placeholder}` path substitution
     endpoint_id: str
     provider: str
-    tier: str                       # tool | credential | platform | platform-overflow (child cycle only)
+    tier: str                       # tool | credential | anonymous | platform | platform-overflow
     cost_type: str = ""             # cost.type — decides whether a 4xx is billable (per_call is)
     estimate_micro: int = 0         # RAW provider estimate; the ledger applies the margin
     max_cost_micro: int | None = None  # remaining caller ceiling, inherited by overflow
@@ -433,8 +448,8 @@ def _body_limit(body: bytes) -> int | None:
         val = doc.get(name)
         if isinstance(val, int) and not isinstance(val, bool) and val > 0:
             return val
-    for name in ("targets", "keywords", "domains", "urls", "lookups", "emails"):
-        val = doc.get(name)  # one row per item: moz targets, dataforseo keywords, companyenrich domains, brightdata urls
+    for name in ("targets", "keywords", "domains", "urls", "lookups", "emails", "contacts", "companies"):
+        val = doc.get(name)  # one row per item: moz targets, dataforseo keywords, companyenrich domains, brightdata urls, lusha contacts/companies
         if isinstance(val, list) and val:
             return len(val)
     # icypeas / lusha: {"pagination": {"size": 10}}; influencersclub: {"paging": {"limit": 10}} —
@@ -602,10 +617,25 @@ def _marketplace_pricing(
             "domains", "names", "professional_network_profile_urls", "business_emails"
         ))
         return _usd_to_micro(float(cost.get("usd") or 0) * count), unit
-    if provider != "aviato":
+    if provider == "hunter" and endpoint_id == "hunter.companies.emails":
+        # Hunter charges 1 search credit per 10 emails RETURNED, rounded UP — not linear per-email.
+        # The settle logic uses ceil(emails/10); the estimate must match to avoid billing mismatch.
+        # With limit=1 returning 1 email: linear estimate would be $0.00245, but settle is 1 credit
+        # = $0.0245 — a 10x overbill. Use the same rounding here.
+        raw = query.get("limit")
+        asked = int(str(raw)) if raw is not None and str(raw).isdigit() else 10  # Hunter's default
+        asked = max(1, min(asked, 100))  # Hunter's max
+        rate = catalog_store.load().credit_rates.get("hunter")
+        if rate:
+            credits = -(-asked // 10)  # ceil division: whole credits, minimum 1
+            return _usd_to_micro(credits * rate), _usd_to_micro(rate)
+        return estimate, unit
+    if provider != "aviato" and not cost.get("modifiers"):
         return estimate, unit
 
-    rate = catalog_store.load().credit_rates.get("aviato")
+    # Credit-priced providers with a `cost.modifiers` block (Aviato, cloro): the request decides
+    # the price, so the reserve is base + every triggered rider, converted at the provider's rate.
+    rate = catalog_store.load().credit_rates.get(provider)
     if not rate:
         return estimate, unit
     def credit_micro(credits):
@@ -792,7 +822,7 @@ def _platform_offer(ep: dict, provider, org: Org) -> dict | None:
     OAuth provider (a platform key is meaningless for one: the credential is a user's own account),
     or a demo org (the sandbox and the public demo must never be able to spend real money — the
     landing page is reachable by anyone with the URL)."""
-    if not provider.uses_pasted_secret:
+    if ep.get("platform_auth") == "anonymous" or not provider.uses_pasted_secret:
         return None
     cat = catalog_store.load()
     if not cat.platform_eligible(ep):
@@ -802,6 +832,26 @@ def _platform_offer(ep: dict, provider, org: Org) -> dict | None:
     if demo_sandbox.is_sandbox(org) or org.public_demo:
         return None
     return cat.cost_view(ep.get("cost"), ep["provider"]) or None
+
+
+def _anonymous_offer(ep: dict, org: Org) -> dict | None:
+    """A free catalog fallback that relays without any provider credential.
+
+    The team's own tool or credential is resolved before this function is reached, so the normal
+    own-key precedence remains intact. The deployment provider allow-list is still the kill switch.
+    Catalog validation confines this mode to verified, free, read-only endpoints.
+    """
+    if ep.get("platform_auth") != "anonymous":
+        return None
+    cat = catalog_store.load()
+    if not cat.platform_eligible(ep):
+        return None
+    if not get_settings().platform_provider_enabled(ep["provider"]):
+        return None
+    if demo_sandbox.is_sandbox(org) or org.public_demo:
+        return None
+    cost = cat.cost_view(ep.get("cost"), ep["provider"])
+    return cost if cost and cost.get("type") == "free" else None
 
 
 def _capability_alternatives(ep: dict, *, limit: int = 3) -> list[str]:
@@ -967,6 +1017,35 @@ def _document_value(document: object, dotted: str) -> object:
             return None
         current = current[part]
     return current
+
+
+def _enforce_catalog_query(ep: dict, query: QueryValues, has_body: bool) -> None:
+    """Opt-in catalog contract on every credential tier; raw own-tool relays are unaffected.
+
+    A strict GET tool accepts only its declared query fields, once each. No request is rewritten,
+    and invalid values are never echoed (they may be accidentally supplied session credentials).
+    """
+    if not ep.get("strict_query"):
+        return
+    fields = (ep.get("input") or {}).get("queryParams") or {}
+    values: dict[str, str] = {}
+    invalid = has_body
+    for name, value in query.multi_items():
+        spec = fields.get(name)
+        if name in values or not isinstance(spec, dict):
+            invalid = True
+        elif spec.get("enum") is not None and value not in spec["enum"]:
+            invalid = True
+        values[name] = value
+    if any(spec.get("required") and not values.get(name) for name, spec in fields.items()):
+        invalid = True
+    if invalid:
+        raise ResolutionFailed(
+            "catalog_parameter_invalid", status_code=400,
+            detail={"error": "catalog_parameter_invalid", "endpoint_id": ep["id"],
+                    "message": "Use only the declared query parameters and allowed values, once each; "
+                               "include required parameters and omit the request body."},
+        )
 
 
 def _enforce_platform_request(ep: dict, body: bytes) -> None:
@@ -1267,6 +1346,7 @@ async def _resolve_marketplace_call(
     ladder. Annotated endpoints select by provider plus grant method. That generic identity avoids
     ambiguous same-host tools without teaching the faithful relay about Instagram or Meta.
     """
+    _enforce_catalog_query(ep, query, has_body)
     await _enforce_capability_pin(ep, caller, db)
     _enforce_catalog_status(ep)
     service = ep["provider"]
@@ -1315,6 +1395,16 @@ async def _resolve_marketplace_call(
         authorization = connection_authorization.method_spec(provider, chosen_method)
         _preflight_authorization(ep, chosen_secret, chosen_method, authorization)
         provider = provider.profile_for_authorization(chosen_method)
+
+    endpoint_host = str(ep.get("host") or "").strip().lower()
+    if endpoint_host and provider.catalog_targets:
+        try:
+            provider = provider.profile_for_catalog_host(endpoint_host)
+        except ValueError as exc:
+            raise ResolutionFailed(
+                "injection_failed", status_code=502,
+                detail=f"{ep['id']} declares an upstream host that is not approved for {service}",
+            ) from exc
 
     upstream, consumed = _marketplace_upstream(ep, provider, query, chosen_method)
     body = await read_body() if has_body else b""
@@ -1367,6 +1457,23 @@ async def _resolve_marketplace_call(
             bindings=_provider_bindings(provider, secret),
         )
         return MarketplaceCall(tool=virtual, tier="credential", **common)
+
+    # Generic public-upstream fallback. It comes after both own-key tiers, so a team's credential
+    # still wins, and before tier 4 because no treg provider credential or money is needed. The
+    # empty binding list is the whole behavior: the normal faithful relay sends the caller's
+    # request without inventing an Authorization or provider-key header.
+    anonymous_cost = _anonymous_offer(ep, caller.org)
+    if anonymous_cost is not None:
+        _enforce_platform_request(ep, body)
+        virtual = Tool(
+            org_id=caller.org_id, name=ep["id"], owner=caller.email,
+            base_url=provider.base_url, host=_host_of(provider.base_url), bindings=[],
+        )
+        return MarketplaceCall(
+            tool=virtual, tier="anonymous", **{
+                **common, "cost_type": "free", "estimate_micro": 0, "unit_micro": 0,
+            },
+        )
 
     # tier 4 — treg's own key, metered against the org's balance. Shadowed by tiers 1 and 2 above:
     # an org that brought its own credential is billed by the provider, not by us, and must never be

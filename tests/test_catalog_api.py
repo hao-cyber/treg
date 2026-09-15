@@ -11,6 +11,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import shlex
 
 from httpx import AsyncClient
 
@@ -616,6 +617,60 @@ async def test_unknown_endpoint_is_404(clients: AsyncClient):
     assert r.status_code == 404 and "tikhub.tiktok.nope" in r.text
 
 
+def test_hunter_multi_domain_search_uses_official_query_filters():
+    """Hunter Multi-Domain Search (Beta) rejects a JSON `companies` array with
+    `wrong_params` / `Unknown parameter: companies.` Official docs take company
+    and email filters as query parameters on POST (feedback #183)."""
+    cat = cs.load()
+    ep = cat.by_id["hunter.x.multi-domain-search"]
+    inp = ep.get("input") or {}
+    body = inp.get("body") or {}
+    query = inp.get("queryParams") or {}
+    test = ep.get("test_request") or {}
+
+    assert "companies" not in body
+    assert "companies" not in query
+    assert "companies" not in (test.get("body") or {})
+    assert "companies" not in (test.get("queryParams") or {})
+    assert "location" in query
+    assert "department" in query
+    assert "company_name" in query
+    assert query["location"].get("example") == "US"
+    assert test.get("queryParams", {}).get("location") == "US"
+    assert test.get("queryParams", {}).get("department") == "executive"
+    assert "body" not in test
+
+    tmpl = cs.call_template(ep)
+    assert tmpl.startswith("treg call hunter.x.multi-domain-search --method POST")
+    assert "--data" not in tmpl
+    assert "companies" not in tmpl
+    argv = shlex.split(tmpl)
+    queries = [argv[i + 1] for i, part in enumerate(argv) if part == "--query"]
+    assert "location=US" in queries
+    assert "department=executive" in queries
+
+
+def test_serpstat_jsonrpc_id_is_required_in_call_template():
+    """Serpstat rejects a JSON-RPC body without top-level `id`. `call_template` only
+    includes required body fields via `_required_examples`, so `id` must be required
+    on every Serpstat endpoint that declares it."""
+    cat = cs.load()
+    serpstat = [ep for ep in cat.endpoints if ep["provider"] == "serpstat"]
+    assert len(serpstat) >= 12, "every curated Serpstat endpoint is in play"
+    for ep in serpstat:
+        field = ((ep.get("input") or {}).get("body") or {}).get("id")
+        assert isinstance(field, dict), ep["id"]
+        assert field.get("required") is True, ep["id"]
+        assert field.get("example") == "1", ep["id"]
+
+    tmpl = cs.call_template(cat.by_id["serpstat.web.backlinks.summary"])
+    assert tmpl.startswith("treg call serpstat.web.backlinks.summary --method POST")
+    argv = shlex.split(tmpl)
+    data = json.loads(argv[argv.index("--data") + 1])
+    assert data["id"] == "1"
+    assert data["method"] == "SerpstatBacklinksProcedure.getSummaryV2"
+
+
 def test_call_template_falls_back_to_documented_examples(tmp_path):
     """No test_request (an unverified endpoint) still yields a usable line: required params only,
     valued by their documented example, or a typed placeholder when even that is missing."""
@@ -820,21 +875,36 @@ async def test_ai_generation_pages_keep_comparisons_curated_and_coverage_in_mode
     # the job-level rows return only when specific models are hand-picked into them.
     assert {section["domain"] for section in video["domains"]} == {"models"}
     rows = video["domains"][0]["rows"]
-    assert all(row["kind"] == "single" for row in rows)
+    # reAPI and PiAPI share per-model join keys on purpose, so the same model over two routes is
+    # the one merged row the wall is built for (a real comparison of price and filter policy).
+    shared = {"video-gen.seedance-2-5.generate", "video-gen.seedance-2-5-unrestricted.generate"}
+    assert {row["capability"] for row in rows if row["kind"] != "single"} == shared
+    providers = {row["capability"]: {e["provider"] for e in row["endpoints"]} for row in rows}
+    # the official OpenRouter route joins the default-filter row; only the resellers relax the filter
+    assert providers["video-gen.seedance-2-5.generate"] == {"reapi", "piapi", "openrouter"}
+    assert providers["video-gen.seedance-2-5-unrestricted.generate"] == {"reapi", "piapi"}
     caps = {row["capability"] for row in rows}
     assert "video-gen.from_text" not in caps and "video-gen.from_image" not in caps
     ids = {endpoint["id"] for row in rows for endpoint in row["endpoints"]}
     assert {"minimax.video-gen.from_text", "minimax.video-gen.from_image",
             "openrouter.video-gen.wan-3-0.from_text",
-            "replicate.video-gen.seedance-1-lite"} <= ids
+            "replicate.video-gen.seedance-1-lite",
+            "reapi.video-gen.seedance-2-5.unrestricted",
+            "piapi.video-gen.seedance-2-5.less-restriction"} <= ids
 
     image = (await clients.get("/catalog/platforms/image-gen")).json()
     assert {section["domain"] for section in image["domains"]} == {"models"}
     image_rows = [row for section in image["domains"] for row in section["rows"]]
-    assert all(row["kind"] == "single" for row in image_rows)
+    shared_images = {"image-gen.gpt-image-2-5.generate", "image-gen.gpt-image-2.generate",
+                     "image-gen.gemini-3-pro-image.generate"}
+    assert {row["capability"] for row in image_rows if row["kind"] != "single"} == shared_images
+    # every image model row compares the two resellers with Replicate's official model
+    assert all({e["provider"] for e in row["endpoints"]} == {"reapi", "piapi", "replicate"}
+               for row in image_rows if row["capability"] in shared_images)
     assert "image-gen.from_text" not in {row["capability"] for row in image_rows}
     image_ids = {endpoint["id"] for row in image_rows for endpoint in row["endpoints"]}
-    assert {"minimax.image-gen.from_text", "replicate.image-gen.flux-schnell"} <= image_ids
+    assert {"minimax.image-gen.from_text", "replicate.image-gen.flux-schnell",
+            "reapi.image-gen.gemini-3-pro-image", "piapi.image-gen.gpt-image-2-5"} <= image_ids
 
 
 def test_a_missing_catalog_directory_is_an_empty_catalog_not_a_crash(tmp_path):
@@ -1249,3 +1319,111 @@ def test_generic_display_prices_match_web_and_cli():
     cost = cat.cost_view({'type': 'per_result', 'currency': 'USD', 'value': 2,
                          'display': {'unit': 'item', 'variable': True}}, 'another-provider')
     assert _price_label(cost) == _cost_usd(cost) == _cost_label(cost) == '$2+/item'
+
+
+def test_hunter_domain_search_advertises_one_search_credit():
+    """Feedback #201: live Domain Search bills 1 SEARCH credit (~$0.0245) even for one email.
+
+    `value`/`per`/`note` stay 1 credit per 10 emails — `usd` is still that linear slice so
+    reserve can scale with `limit`. catalog_get / usd_per_call must quote the whole credit,
+    which is what `display.grouped` + `advertised_usd` do. Settlement is unchanged.
+    """
+    cat = cs.load()
+    raw = cat.by_id["hunter.companies.emails"]["cost"]
+    assert (raw["value"], raw["per"], raw["unit"]) == (1, 10, "record")
+    cost = cat.cost_view(raw, "hunter")
+    assert cost["usd"] == 0.00245
+    assert cost["display_usd"] == 0.0245
+    assert cost["display_unit"] == "started 10 emails"
+    assert cat.advertised_usd(cost) == 0.0245
+    # Sibling Finder and Multi-Domain reveal already quote one full search credit.
+    find = cat.cost_view(cat.by_id["hunter.people.email.find"]["cost"], "hunter")
+    assert find["usd"] == 0.0245 and cat.advertised_usd(find) == 0.0245
+    reveal = cat.cost_view(cat.by_id["hunter.x.multi-domain-search-reveal"]["cost"], "hunter")
+    assert reveal["usd"] == 0.0245 and cat.advertised_usd(reveal) == 0.0245
+
+
+def test_dataforseo_related_keywords_does_not_advertise_order_by():
+    """Feedback #54: live related_keywords/live rejects order_by with 40501.
+
+    Vendor docs still list the field; the live API does not. catalog_get must not
+    offer it on this id. ranked_keywords (a sibling Labs route) still sorts.
+    """
+    cat = cs.load()
+    ideas = cat.by_id["dataforseo.google.keywords.ideas"]
+    assert ideas["path"] == "/dataforseo_labs/google/related_keywords/live"
+    body = ideas["input"]["body"]
+    assert "order_by" not in body
+    assert "filters" in body
+    assert "order_by" in ideas["input"]["note"]
+    ranked = cat.by_id["dataforseo.google.domain.ranked_keywords"]
+    assert "order_by" in ranked["input"]["body"]
+    for task in ideas["test_request"]["body"]:
+        assert "order_by" not in task
+
+
+async def test_catalog_get_dataforseo_related_keywords_omits_order_by(clients: AsyncClient):
+    body = (await clients.get("/catalog/endpoints/dataforseo.google.keywords.ideas")).json()
+    assert "order_by" not in body["endpoint"]["input"]["body"]
+    assert "order_by" in body["endpoint"]["input"]["note"]
+
+
+def test_dataforseo_backlinks_summary_is_single_task():
+    """Feedback #102 / #103: backlinks/summary/live accepts exactly one task.
+
+    catalog_get used to reuse the generic "array of task objects" wording (and
+    the provider-level "up to 100 tasks" limit), so agents batched domains and
+    got per-task 40000 "You can set only one task at a time" on the rest.
+    Vendor docs: each Live API call can contain only one task. Multi-target
+    work is dataforseo.web.url.metrics (bulk_ranks/live, many targets / one task).
+    """
+    cat = cs.load()
+    ep = cat.by_id["dataforseo.web.backlinks.summary"]
+    assert ep["path"] == "/backlinks/summary/live"
+    note = ep["input"]["note"]
+    assert "exactly one task" in note
+    assert "40000" in note
+    assert "dataforseo.web.url.metrics" in note
+    tasks = ep["test_request"]["body"]
+    assert isinstance(tasks, list) and len(tasks) == 1
+    limits = cat.provider_meta["dataforseo"]["limits"]
+    assert "exactly one task" in limits
+    assert "up to 100 tasks per POST array" not in limits
+
+
+async def test_catalog_get_dataforseo_backlinks_summary_names_the_single_task_limit(
+        clients: AsyncClient):
+    body = (await clients.get("/catalog/endpoints/dataforseo.web.backlinks.summary")).json()
+    note = body["endpoint"]["input"]["note"]
+    assert "exactly one task" in note
+    assert "40000" in note
+    assert "dataforseo.web.url.metrics" in note
+    assert "up to 100 tasks per POST array" not in body["provider"]["limits"]
+    assert "exactly one task" in body["provider"]["limits"]
+    tmpl = body["call_template"]
+    assert tmpl.startswith("treg call dataforseo.web.backlinks.summary --method POST")
+    assert "--data '[{\"target\":\"moz.com\"" in tmpl
+
+
+async def test_catalog_get_dataforseo_page_audit_names_browser_preset_dependency(
+        clients: AsyncClient):
+    """Feedback #234 / #235: catalog_get must not advertise browser_preset alone."""
+    body = (await clients.get("/catalog/endpoints/dataforseo.web.page.audit")).json()
+    fields = body["endpoint"]["input"]["body"]
+    assert "enable_browser_rendering=true" in fields["browser_preset"]["note"]
+    assert "40501" in fields["browser_preset"]["note"]
+    assert "browser_preset" in fields["enable_browser_rendering"]["note"]
+    assert "browser_preset" in body["endpoint"]["input"]["note"]
+    assert "enable_browser_rendering" in body["endpoint"]["input"]["note"]
+
+
+async def test_catalog_get_hunter_domain_search_quotes_the_credit(clients: AsyncClient):
+    body = (await clients.get("/catalog/endpoints/hunter.companies.emails")).json()
+    cost = body["endpoint"]["cost"]
+    assert cost["usd"] == 0.00245, "reserve unit stays the per-record slice"
+    assert cost["display_usd"] == 0.0245
+    assert cost["display_unit"] == "started 10 emails"
+    search = (await clients.get("/catalog/search", params={"q": "hunter domain search emails", "limit": 50})).json()
+    row = next(r for r in search["results"] if r["id"] == "hunter.companies.emails")
+    assert row["cost"]["display_usd"] == 0.0245
+    assert row["cost"]["usd"] == 0.00245

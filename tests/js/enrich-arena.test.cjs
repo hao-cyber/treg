@@ -574,10 +574,10 @@ test('Charts follow task and input selection and use current batch prices withou
 
 test('Discovery jobs have their own group and preserve labelled batch fields',()=>{
  const {app}=setup();
- app.tasks.push({id:'people.search',label:'Find people',discovery:true,max_entries:10,result_limit:10,variants:[['q'],['title','country']],fields:['people','count']},{id:'people.company.search',label:'People at a company',discovery:true,max_entries:10,variants:[['company_domain'],['title','company_domain']],fields:['people','count']},{id:'companies.similar',label:'Find similar companies',discovery:true,max_entries:10,variants:[['domain']],fields:['companies','count']},{id:'people.email.verify',variants:[['email']]});
+ app.tasks.push({id:'people.search',label:'Find people',discovery:true,max_entries:10,result_limit:10,variants:[['title','company_domain'],['company_domain'],['q'],['title','country']],fields:['people','count']},{id:'companies.similar',label:'Find similar companies',discovery:true,max_entries:10,variants:[['domain']],fields:['companies','count']},{id:'people.email.verify',variants:[['email']]});
  assert.deepEqual(Array.from(app.jobGroups,g=>g.label),['Discover','Enrich','Verify']);
  app.chooseTask(app.tasks[1].id);assert.equal(app.taskId,'people.search');assert.equal(app.discovery,true);assert.equal(app.maxEntries,10);
- app.variant=1;app.inputs={};
+ app.variant=3;app.inputs={};
  assert.equal(paste(app,'Country code\tJob title\nUS\tEngineer\nGB\tRecruiter'),true);
  assert.equal(app.inputs.title,'Engineer');assert.equal(app.extraInputs[0].country,'GB');assert.equal(app.inputError(),'');
  app.extraInputs[0].country='United Kingdom';assert.match(app.inputError(),/Entry 2: Use a two-letter country code/);
@@ -611,7 +611,6 @@ test('Use-case tabs keep action labels, skip reselection, and support keyboard s
  const tabs={value:'people.search',disabled:false,$emit:(...args)=>events.push(args)};
  for(const [name,method] of Object.entries(definition.methods))tabs[name]=method.bind(tabs);
  assert.equal(tabs.label({id:'people.email.find'}),'Find work email');
- assert.equal(tabs.label({id:'people.company.search'}),'Find people at company');
  tabs.select('people.search');assert.equal(events.length,0);
  let focused=-1,prevented=0;
  const buttons=['people.search','companies.similar','people.email.find'].map((id,i)=>({dataset:{task:id},focus(){focused=i;}}));

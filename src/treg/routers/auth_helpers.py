@@ -1,6 +1,6 @@
 """HTTP cookie helpers shared by authentication routes."""
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from ..config import get_settings
 
@@ -64,3 +64,27 @@ def _same_origin(request: Request) -> bool:
     if origin == "null" and request.headers.get("sec-fetch-site") in ("same-origin", "none"):
         return True
     return False
+
+
+def require_managed_cli(request: Request, *, team_change: bool = False) -> None:
+    """Stop known old CLI flows before they save an unusable token/team pair.
+
+    The released CLI uses httpx's default User-Agent and the ngrok header. Browsers
+    and generic API clients are not version-gated. This is a compatibility hint,
+    never an authorization check: all credential restrictions still apply if a
+    client omits these headers or claims support.
+    """
+    headers = request.headers
+    if (headers.get("X-Treg-Key-Protocol") == "1"
+            or headers.get("ngrok-skip-browser-warning") != "1"
+            or not headers.get("user-agent", "").startswith("python-httpx/")):
+        return
+    if team_change:
+        from ..domain.identity import session as sess
+        claims = sess.read_identity_claims(headers.get("X-Treg-Token", "")) or {}
+        if claims.get("scope") not in {sess.TEAM_SCOPE, sess.BOOTSTRAP_SCOPE}:
+            return  # Existing unscoped or opaque credentials keep their old behavior.
+    raise HTTPException(status_code=426, detail=(
+        "This CLI must be updated for managed API keys. Run `treg update`, then retry. "
+        "Your saved token and active team have not changed."
+    ), headers={"Cache-Control": "no-store", "X-Treg-Error": "1"})

@@ -97,7 +97,6 @@
 
   const TaskIcon={props:['task'],computed:{path(){return ({
     'people.search':'M14 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM3 21v-2a6 6 0 0 1 8-5.65M20 17a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm-1 2 3 3',
-    'people.company.search':'M3 21V4h11v6M6 8h1m3 0h1M6 12h1m-1 4h1m-1 4h1M21 21v-1a5 5 0 0 0-10 0v1m8-9a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
     'companies.similar':'M3 3h7v7H3zM14 14h7v7h-7zM14 3h7v7h-7zM6.5 14v3.5H10m0 0-2-2m2 2-2 2',
     'people.email.find':'M11 19H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5M2 6l10 7 10-7M20 17a3 3 0 1 1-6 0 3 3 0 0 1 6 0Zm-1 2 3 3',
     'people.phone.find':'M21 16.5v3a2 2 0 0 1-2.2 2A18 18 0 0 1 2.5 5.2 2 2 0 0 1 4.5 3h3l1.5 5-2 1.5a13 13 0 0 0 7.5 7.5l1.5-2Z',
@@ -111,7 +110,7 @@
     components:{TaskIcon},props:['groups','value','disabled'],emits:['change'],
     data:()=>({resizeObserver:null,overflowLeft:false,overflowRight:false}),
     computed:{
-      tasks(){const all=this.groups.flatMap(g=>g.tasks),order=['people.email.find','people.phone.find','people.enrich','companies.enrich','people.email.verify','people.phone.verify','people.identity.resolve','people.search','people.company.search','companies.similar'];return order.map(id=>all.find(t=>t.id===id)).filter(Boolean);},
+      tasks(){const all=this.groups.flatMap(g=>g.tasks),order=['people.email.find','people.phone.find','people.enrich','companies.enrich','people.email.verify','people.phone.verify','people.identity.resolve','people.search','companies.similar'];return order.map(id=>all.find(t=>t.id===id)).filter(Boolean);},
     },
     watch:{value:'reveal',tasks:'reveal'},
     methods:{
@@ -135,7 +134,7 @@
         }
         this.updateOverflow();
       },
-      label(task){return ({'people.email.find':'Find work email','people.enrich':'Enrich person','companies.enrich':'Enrich company','people.phone.find':'Find phone number','people.identity.resolve':'Find LinkedIn profile','people.company.search':'Find people at company'})[task.id]||task.label;},
+      label(task){return ({'people.email.find':'Find work email','people.enrich':'Enrich person','companies.enrich':'Enrich company','people.phone.find':'Find phone number','people.identity.resolve':'Find LinkedIn profile'})[task.id]||task.label;},
       select(id){if(!this.disabled&&id!==this.value)this.$emit('change',id);},
       keydown(event){
         if(this.disabled)return;
@@ -227,7 +226,7 @@
       verificationPreview(){return this.verificationEstimate(this.verificationTask);},
       discovery(){return !!this.currentTask.discovery;},
       maxEntries(){return this.currentTask.max_entries||50;},
-      jobGroups(){const groups=[{label:'Discover',ids:['people.search','people.company.search','companies.similar']},{label:'Enrich',ids:['people.email.find','people.phone.find','people.enrich','companies.enrich','people.identity.resolve']},{label:'Verify',ids:['people.email.verify','people.phone.verify']}];return groups.map(g=>({...g,tasks:g.ids.map(id=>this.tasks.find(t=>t.id===id)).filter(Boolean)})).filter(g=>g.tasks.length);},
+      jobGroups(){const groups=[{label:'Discover',ids:['people.search','companies.similar']},{label:'Enrich',ids:['people.email.find','people.phone.find','people.enrich','companies.enrich','people.identity.resolve']},{label:'Verify',ids:['people.email.verify','people.phone.verify']}];return groups.map(g=>({...g,tasks:g.ids.map(id=>this.tasks.find(t=>t.id===id)).filter(Boolean)})).filter(g=>g.tasks.length);},
       currentTask(){return this.tasks.find(t=>t.id===this.taskId)||{description:'Choose a task to get started.',variants:[],providers:[],fields:[]};},
       inputKeys(){return this.currentTask.variants[this.variant]||[];},
       insightInput(){return this.inputKeys.length===2&&this.inputKeys.includes('full_name')&&this.inputKeys.includes('domain')?'name_domain':this.inputKeys.length===1?this.inputKeys[0]:'';},

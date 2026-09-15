@@ -195,6 +195,27 @@ def _finite_number(value: object) -> bool:
             and math.isfinite(float(value)))
 
 
+def check_strict_query(ep: dict, where: str, errors: list[str]) -> None:
+    if "strict_query" not in ep:
+        return
+    if type(ep["strict_query"]) is not bool:
+        fail(errors, where, "strict_query must be a boolean")
+    if ep["strict_query"] is not True:
+        return
+    fields = (ep.get("input") or {}).get("queryParams")
+    if ep.get("method") != "GET" or not isinstance(fields, dict) or not fields:
+        fail(errors, where, "strict_query requires a GET with declared queryParams")
+        return
+    if "{" in str(ep.get("path", "")) or (ep.get("input") or {}).get("body"):
+        fail(errors, where, "strict_query cannot use path placeholders or body inputs")
+    for name, spec in fields.items():
+        if not isinstance(spec, dict):
+            fail(errors, where, f"strict query field {name} must be a mapping")
+        elif "enum" in spec and (not isinstance(spec["enum"], list) or not spec["enum"]
+                                 or any(not isinstance(v, str) for v in spec["enum"])):
+            fail(errors, where, f"strict query field {name} enum must contain strings")
+
+
 def check_platform_request(rule: object, input_schema: object, where: str,
                            errors: list[str]) -> None:
     """Platform-only fixed body values; BYOK input remains an upstream contract."""
@@ -211,6 +232,30 @@ def check_platform_request(rule: object, input_schema: object, where: str,
         if (not isinstance(allowed, list) or len(allowed) != 1
                 or type(value) is not type(allowed[0]) or value != allowed[0]):
             fail(errors, where, "platform_request value must match the field's singleton enum")
+
+
+def check_platform_auth(ep: dict, where: str, errors: list[str]) -> None:
+    """Anonymous platform fallback is intentionally narrow: proven public GETs that cost zero."""
+    mode = ep.get("platform_auth")
+    if mode is None:
+        return
+    if mode != "anonymous":
+        fail(errors, where, "platform_auth must be 'anonymous'")
+        return
+    if ep.get("method") != "GET":
+        fail(errors, where, "platform_auth anonymous requires GET")
+    cost = ep.get("cost")
+    if not isinstance(cost, dict) or cost.get("type") != "free":
+        fail(errors, where, "platform_auth anonymous requires cost.type free")
+    if not ep.get("verified"):
+        fail(errors, where, "platform_auth anonymous requires live verification")
+    if ep.get("scope", "any_account") != "any_account" or ep.get("kind") == "account":
+        fail(errors, where, "platform_auth anonymous cannot expose an own-account endpoint")
+    if (ep.get("authorization_method") or ep.get("authorization_methods")
+            or ep.get("required_scopes") or ep.get("required_resource")):
+        fail(errors, where, "platform_auth anonymous cannot require provider authorization")
+    if ep.get("async") or ep.get("resource_ownership"):
+        fail(errors, where, "platform_auth anonymous cannot create or retrieve shared async resources")
 
 
 def check_cost_table(cost: dict, input_schema: object, where: str, errors: list[str]) -> None:
@@ -864,8 +909,19 @@ def main(argv: list[str]) -> int:
                 fail(errors, where, f"bad scope '{ep.get('scope')}'")
             if ep.get("method") not in METHODS:
                 fail(errors, where, f"bad method '{ep.get('method')}'")
+            host = ep.get("host")
+            if host is not None:
+                if not isinstance(host, str) or not HOST.fullmatch(host):
+                    fail(errors, where, "host must be one DNS hostname without a scheme, port, or path")
+                elif (provider_config := REGISTRY.get(service)) and provider_config.catalog_targets:
+                    try:
+                        provider_config.profile_for_catalog_host(host)
+                    except ValueError:
+                        fail(errors, where, f"host '{host}' is not an approved catalog target for '{service}'")
             check_status_marker(ep, where, endpoint_status, errors)
             inp = ep.get("input") or {}
+            check_strict_query(ep, where, errors)
+            check_platform_auth(ep, where, errors)
             if "platform_request" in ep:
                 check_platform_request(ep["platform_request"], inp, where, errors)
             default_array_encoding = inp.get("queryArrayEncoding")

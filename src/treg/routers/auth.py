@@ -8,7 +8,7 @@ import re
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from cryptography.fernet import InvalidToken
-from fastapi import APIRouter, Cookie, Depends, Form, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Cookie, Depends, Form, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +33,7 @@ from ..domain.identity import session as sess
 from ..domain.identity.access import require_identity
 from ..domain.identity.mcp_oauth import REFRESH_TTL_S
 from ..models import User
-from .auth_helpers import _is_https, _remember_oauth_return, _same_origin
+from .auth_helpers import _is_https, _remember_oauth_return, _same_origin, require_managed_cli
 from .web import _esc_html
 
 # The app alias preserves the moved handlers' original @app.post decorator text byte-for-byte.
@@ -82,6 +82,7 @@ async def auth_email_start(
     + logs it (so dummy emails are testable); prod will email it instead. Throttled per-email AND per-IP
     (sliding window) so this open endpoint can't be used to email-bomb an inbox or reset the OTP
     brute-force counter at will. All this state is in the DB (survives restart, correct multi-instance)."""
+    require_managed_cli(request)
     try:
         return await auth_use_cases.start_email_login(body.email, _client_ip(request))
     except auth_use_cases.EmailAuthError as exc:
@@ -95,12 +96,14 @@ async def auth_email_verify(
     """Check the code → find-or-create the user → mint an identity token AND set a browser session
     cookie. The CLI reads the token from the body; the dashboard just reloads into session mode
     (same path as GitHub login) — one endpoint serves both clients."""
+    require_managed_cli(request)
     try:
         verified = await auth_use_cases.verify_email_login(body.email, body.code,
             entry_surface=request.cookies.get("treg_entry_surface", ""))
     except auth_use_cases.EmailAuthError as exc:
         raise _email_http_error(exc) from exc
     resp = JSONResponse({"token": verified.token, "email": verified.email})
+    resp.headers["Cache-Control"] = "no-store"
     resp.set_cookie(sess.COOKIE, verified.session_cookie, httponly=True,
                     samesite="lax", secure=_is_https(request), max_age=sess.TTL_SECONDS)
     return resp
@@ -351,11 +354,13 @@ async def auth_cli_start() -> dict:
 
 
 @app.get("/auth/cli/poll")
-async def auth_cli_poll(login_id: str = "") -> dict:
+async def auth_cli_poll(response: Response, login_id: str = "") -> dict:
     """The CLI polls this after opening the browser; returns the identity token once, then forgets it.
     A token only lands here after auth_cli_approve validated the terminal pairing code, so a login the
     user didn't approve never yields one — there is nothing here to brute-force (no code parameter)."""
-    return await auth_use_cases.poll_cli_login(login_id)
+    result = await auth_use_cases.poll_cli_login(login_id)
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 # `treg login` mints the login_id with token_urlsafe(18) (24 chars); anything outside this shape is
@@ -1036,7 +1041,7 @@ async def oauth_token(
         )
     except auth_use_cases.OAuthServerError as exc:
         return _oauth_json_error(exc)
-    return JSONResponse(token)
+    return JSONResponse(token, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
 @app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
@@ -1134,11 +1139,13 @@ token_router = app
 
 @app.get("/auth/cli-token")
 async def auth_cli_token(
+    response: Response,
     user: User = Depends(require_identity),
     x_treg_org: str = Header(default=""),
+    x_treg_token: str = Header(default=""),
 ) -> dict:
     """Mint a fresh CLI/bearer token for the authenticated caller (session cookie OR token). Identity
-    tokens are stateless (`sess.make_identity`), so handing one out rotates/invalidates nothing — it just lets
+    tokens are signed (`sess.make_identity`); minting the current generation invalidates nothing — it lets
     the dashboard embed a working token in copy-paste snippets + a 'copy token' button, so a human
     doesn't have to hunt for it in `~/.treg/config.json`.
 
@@ -1146,13 +1153,22 @@ async def auth_cli_token(
     confirming membership), the org slug is BAKED into the token. That is what makes the dashboard's
     "your API key" work as a bare bearer where no `X-Treg-Org` header can travel — pasted into an MCP
     server's Authorization it resolves to that team, no header, no per-org agent token to manage. A
-    caller in one team who sends no header still gets a plain token (MCP auto-selects the sole team)."""
-    return await auth_use_cases.issue_cli_token(
+    caller who sends no team receives a seven-day bootstrap credential for onboarding only. It
+    cannot access team resources or use itself to mint a Default key. The response also identifies
+    the selected Default control and its active/disabled state so Getting Started never reveals a
+    disabled token."""
+    claims = sess.read_identity_claims(x_treg_token) if x_treg_token else None
+    if (claims or {}).get("scope") == sess.BOOTSTRAP_SCOPE:
+        raise HTTPException(status_code=403, detail=(
+            "complete team selection in the browser — a bootstrap token cannot mint a Default key"))
+    result = await auth_use_cases.issue_cli_token(
         user_id=user.id,
         email=user.email,
         token_version=user.token_version,
         org_ref=x_treg_org,
     )
+    response.headers["Cache-Control"] = "no-store"
+    return result
 
 
 @app.post("/auth/revoke-tokens")
@@ -1169,6 +1185,7 @@ async def auth_revoke_tokens(
     type and are unaffected — those are revoked by removing the membership.)"""
     revoked = await auth_use_cases.revoke_identity_tokens(user.id)
     resp = JSONResponse({"token": revoked.token, "email": revoked.email, "revoked": True})
+    resp.headers["Cache-Control"] = "no-store"
     resp.set_cookie(sess.COOKIE, revoked.session_cookie, httponly=True,
                     samesite="lax", secure=_is_https(request), max_age=sess.TTL_SECONDS)
     return resp

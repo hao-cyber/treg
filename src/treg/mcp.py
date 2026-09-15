@@ -244,6 +244,7 @@ class CatalogGetOut(TypedDict, total=False):
                                            # response is a list of records (brightdata datasets)
     hints: list[str] | None
     did_you_mean: list[str] | None         # real ids close to one that missed
+    usd_per_call: float | None             # typical-call quote (display_usd when grouped; else usd)
     overflow_price_usd: float | None       # what a call bills when treg's own account is out and the
                                            # overflow relay serves it instead (absent = never relayed)
     overflow_price_unit: str | None        # "call" | "result": what one unit of that price buys
@@ -533,8 +534,8 @@ async def _resolve_org(client: httpx.AsyncClient) -> tuple[int | None, str | Non
 async def _whose_grant(client: httpx.AsyncClient, slug: str | None, *, oauth: bool) -> dict:
     """`{team, team_name, identity, hint}` — enough for a human to spot the WRONG team.
 
-    A slug on its own cannot be sanity-checked. `superdesign-7` looks like a plausible team to an
-    agent and to the person reading over its shoulder, and neither of them can tell it apart from
+    A slug on its own can look plausible to an agent and to the person reading over its shoulder,
+    and neither of them can tell it apart from
     the team they meant; the first signal that anything was wrong was money missing from a balance
     nobody had opened. The display name and the account the grant belongs to are what make the
     mismatch legible — most of the time it is the OTHER half that differs, an OAuth consent given by
@@ -629,7 +630,7 @@ async def _catalog_search_impl(
                           + (f" — {hidden[ep['id']]} more than shown here; catalog_get('{ep['id']}') ranks them all"
                              if ep["id"] in hidden else " below")}
                if _steering and ep.get("kind") == "routed" else {}),
-            "usd_per_call": cost.get("usd"),
+            "usd_per_call": cat.advertised_usd(cost),
             # BOTH halves of tier 4's own truth, not just the price side: `platform_eligible` says
             # the row is priceable, `platform_key_for` says this deploy actually holds an enabled
             # key. Eligible-but-keyless rows used to advertise `no_key_needed: true` here and then
@@ -811,10 +812,14 @@ async def _catalog_get_impl(
     # a "free" endpoint can bill (found 2026-09-08 - apollo.people.search, catalog cost free, billed
     # $0.002 through the overflow relay 8,810 times in a day and nothing on this surface said so).
     ep = (out.get("endpoint") or {}) if isinstance(out, dict) else {}
-    if isinstance(ep, dict) and ep.get("overflow_price_usd") is not None:
-        out["overflow_price_usd"] = ep["overflow_price_usd"]
-        out["overflow_price_unit"] = ep.get("overflow_price_unit")
-        out["overflow_via"] = ep.get("overflow_via")
+    if isinstance(ep, dict):
+        # Same quote catalog_search already leads with, so an agent that inspects by id
+        # does not fall back to the per-record `cost.usd` slice on a grouped credit.
+        out["usd_per_call"] = catalog_store.load().advertised_usd(ep.get("cost") or {})
+        if ep.get("overflow_price_usd") is not None:
+            out["overflow_price_usd"] = ep["overflow_price_usd"]
+            out["overflow_price_unit"] = ep.get("overflow_price_unit")
+            out["overflow_via"] = ep.get("overflow_via")
     return out
 
 
@@ -1354,7 +1359,7 @@ def _allowed_hosts() -> list[str]:
     public = urlsplit(get_settings().public_url).netloc
     if public:
         hosts += [public, public.split(":")[0]]
-    # Every name the reference deployment has ever answered to, SYMMETRICALLY — a .mcp.json
+    # Every name the hosted service has answered to, symmetrically. A .mcp.json
     # pointed at either domain keeps working whichever one public_url currently names, which is
     # what makes an env-var rollback lossless (a treg.to config must survive a revert too).
     hosts += list(PUBLIC_HOST_ALIASES)

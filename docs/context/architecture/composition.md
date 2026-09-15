@@ -154,7 +154,8 @@ Arena statistics. Dataplane processes do not run this collector; `/arena/insight
 Shutdown cancels and awaits every started background worker before draining Arena, audit and
 analytics or closing the shared client, so database rollback/close finishes before event-loop teardown.
 
-`POST /reviews` and `GET /admin/reviews` belong to control, alongside feedback intake and reads.
+`POST /reviews` and `GET /admin/reviews` belong to control, alongside feedback intake and reads,
+as do `POST /media` and the public `GET /m/{token}` that serves a hosted reference file.
 
 The archive object-store lifespan normalizes configuration once, chooses an R2 factory or
 injected in-memory context, and resets the store on exit. R2 validation runs before DB startup

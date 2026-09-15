@@ -10,6 +10,10 @@ proposed_capabilities:
   image-gen.flux-schnell.from_text: "Generate images with FLUX Schnell"
   video-gen.seedance-1-lite.from_text: "Generate a Seedance 1 Lite video from text or an image"
   video-gen.veo-3-1-fast.generate: "Generate a Veo 3.1 Fast video from text, optionally from a starting image"
+  # Shared with reapi.yaml / piapi.yaml: the same image model over several routes merges onto one row.
+  image-gen.gemini-3-pro-image.generate: "Gemini 3 Pro Image"
+  image-gen.gpt-image-2.generate: "GPT Image 2"
+  image-gen.gpt-image-2-5.generate: "GPT Image 2.5"
 # Replicate answers a submission with both a dynamic `urls.get` and the stable official path
 # `GET /v1/predictions/{id}`; the static form is used so the CLI polls a catalog id (served on any
 # credential tier) rather than an absolute URL, which the relay only accepts for a team's own tool.
@@ -165,3 +169,178 @@ endpoints:
     verified: 2026-09-02
     example_response: examples/replicate.predictions.get.json
     docs_url: https://replicate.com/docs/reference/http#predictions.get
+
+  - id: replicate.image-gen.nano-banana-pro
+    capability: image-gen.gemini-3-pro-image.generate
+    platform: image-gen
+    domain: models
+    scope: any_account
+    method: POST
+    path: /models/google/nano-banana-pro/predictions
+    name: "google/nano-banana-pro"
+    summary: "Generate or edit one image with Gemini 3 Pro Image (Nano Banana Pro) at 1K, 2K or 4K through Replicate's official model."
+    input:
+      body:
+        input:
+          type: object
+          required: true
+          properties:
+            prompt: {type: string, required: true, example: "A clean editorial illustration of a paper airplane."}
+            resolution: {type: string, required: false, default: 2K, enum: [1K, 2K, 4K], example: 1K}
+            aspect_ratio: {type: string, required: false, default: match_input_image, enum: [match_input_image, "1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], example: "1:1", note: "match_input_image needs image_input; text-only requests should name a ratio."}
+            image_input: {type: array, required: false, note: "Public image URLs to edit or reference. Each URL must answer a plain GET with the raw image bytes and an image/* content-type (signed cloud-storage or CDN links work; file-page hosts such as tmpfiles.org return HTML and the task fails). `treg host <file>` prints a URL that satisfies this."}
+            output_format: {type: string, required: false, default: jpg, enum: [jpg, png], example: jpg}
+            safety_filter_level: {type: string, required: false, default: block_only_high, enum: [block_low_and_above, block_medium_and_above, block_only_high]}
+      bodyType: json
+    test_request:
+      body: {input: {prompt: "A clean editorial illustration of a paper airplane.", resolution: 1K, aspect_ratio: "1:1", output_format: jpg}}
+    cost:
+      type: per_success
+      table:
+        - {when: {body.input.resolution: 1K}, value: 0.15}
+        - {when: {body.input.resolution: 2K}, value: 0.15}
+        - {when: {body.input.resolution: 4K}, value: 0.30}
+      fallback: {value: 0.301, note: "One 4K image at the documented rate, rounded up a tenth of a cent to clear float comparison."}
+      currency: USD
+      settle: table
+      source: docs
+      source_url: https://replicate.com/google/nano-banana-pro
+      checked: 2026-09-14
+      confidence: documented
+      note: "Replicate's model page prices per output image: $0.15 at 1K or 2K, $0.30 at 4K. One image per prediction. A fallback-model run (allow_fallback_model, not listed) is priced differently."
+    verified: 2026-09-14
+    example_response: examples/replicate.image-gen.nano-banana-pro.json
+    docs_url: https://replicate.com/google/nano-banana-pro/api
+
+  - id: replicate.image-gen.gpt-image-2
+    capability: image-gen.gpt-image-2.generate
+    platform: image-gen
+    domain: models
+    scope: any_account
+    method: POST
+    path: /models/openai/gpt-image-2/predictions
+    name: "openai/gpt-image-2"
+    summary: "Generate or edit images with GPT Image 2 through Replicate's official model, priced per image by quality."
+    input:
+      body:
+        input:
+          type: object
+          required: true
+          properties:
+            prompt: {type: string, required: true, example: "A clean editorial illustration of a paper airplane."}
+            quality: {type: string, required: false, default: low, enum: [low, medium, high], example: low, note: "Price is set by quality; the model's auto tier is not listed because its charge is the dearest listed tier."}
+            aspect_ratio: {type: string, required: false, default: "1:1", enum: ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"], example: "1:1", note: "Explicit pixel sizes (up to 3840x2160) also exist upstream and are not listed: the per-quality price is quoted for the ratio presets."}
+            input_images: {type: array, required: false, note: "Public image URLs to edit or reference. Each URL must answer a plain GET with the raw image bytes and an image/* content-type (signed cloud-storage or CDN links work; file-page hosts such as tmpfiles.org return HTML and the task fails). `treg host <file>` prints a URL that satisfies this."}
+            number_of_images: {type: integer, required: false, default: 1, min: 1, max: 4, example: 1}
+            output_format: {type: string, required: false, default: webp, enum: [png, jpeg, webp], example: webp}
+            background: {type: string, required: false, default: auto, enum: [auto, opaque, transparent]}
+      bodyType: json
+    test_request:
+      body: {input: {prompt: "A clean editorial illustration of a paper airplane.", quality: low, aspect_ratio: "1:1", number_of_images: 1, output_format: webp}}
+    cost:
+      type: per_success
+      table:
+        - {when: {body.input.quality: low}, value: 0.012, times: body.input.number_of_images}
+        - {when: {body.input.quality: medium}, value: 0.047, times: body.input.number_of_images}
+        - {when: {body.input.quality: high}, value: 0.128, times: body.input.number_of_images}
+      fallback: {value: 0.513, note: "Four high-quality images at the documented rate ($0.512), rounded up to clear float comparison."}
+      currency: USD
+      settle: table
+      source: docs
+      source_url: https://replicate.com/openai/gpt-image-2
+      checked: 2026-09-14
+      confidence: documented
+      note: "Replicate's model page prices per output image by quality tier; times number_of_images."
+    verified: 2026-09-14
+    example_response: examples/replicate.image-gen.gpt-image-2.json
+    docs_url: https://replicate.com/openai/gpt-image-2/api
+
+  - id: replicate.image-gen.gpt-image-2-5-flare
+    capability: image-gen.gpt-image-2-5.generate
+    platform: image-gen
+    domain: models
+    scope: any_account
+    method: POST
+    path: /models/openai/gpt-image-2.5-flare/predictions
+    name: "openai/gpt-image-2.5-flare"
+    summary: "Generate or edit images with GPT Image 2.5 Flare through Replicate's official model, priced per image by quality."
+    input:
+      body:
+        input:
+          type: object
+          required: true
+          properties:
+            prompt: {type: string, required: true, example: "A clean editorial illustration of a paper airplane."}
+            quality: {type: string, required: false, default: low, enum: [low, medium, high, xhigh, max], example: low, note: "Price is set by quality; the model's auto tier is not listed because its charge is the dearest listed tier."}
+            aspect_ratio: {type: string, required: false, default: "1:1", enum: ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"], example: "1:1", note: "Explicit pixel sizes (up to 3840x2160) also exist upstream and are not listed: the per-quality price is quoted for the ratio presets."}
+            input_images: {type: array, required: false, note: "Public image URLs to edit or reference. Each URL must answer a plain GET with the raw image bytes and an image/* content-type (signed cloud-storage or CDN links work; file-page hosts such as tmpfiles.org return HTML and the task fails). `treg host <file>` prints a URL that satisfies this."}
+            number_of_images: {type: integer, required: false, default: 1, min: 1, max: 4, example: 1}
+            output_format: {type: string, required: false, default: webp, enum: [png, jpeg, webp], example: webp}
+            background: {type: string, required: false, default: auto, enum: [auto, opaque, transparent]}
+      bodyType: json
+    test_request:
+      body: {input: {prompt: "A clean editorial illustration of a paper airplane.", quality: low, aspect_ratio: "1:1", number_of_images: 1, output_format: webp}}
+    cost:
+      type: per_success
+      table:
+        - {when: {body.input.quality: low}, value: 0.012, times: body.input.number_of_images}
+        - {when: {body.input.quality: medium}, value: 0.047, times: body.input.number_of_images}
+        - {when: {body.input.quality: high}, value: 0.128, times: body.input.number_of_images}
+        - {when: {body.input.quality: xhigh}, value: 0.25, times: body.input.number_of_images}
+        - {when: {body.input.quality: max}, value: 0.50, times: body.input.number_of_images}
+      fallback: {value: 2.001, note: "Four max-quality images at the documented rate ($2.00), rounded up to clear float comparison."}
+      currency: USD
+      settle: table
+      source: docs
+      source_url: https://replicate.com/openai/gpt-image-2.5-flare
+      checked: 2026-09-14
+      confidence: documented
+      note: "Replicate's model page prices per output image by quality tier; times number_of_images."
+    verified: 2026-09-14
+    example_response: examples/replicate.image-gen.gpt-image-2-5-flare.json
+    docs_url: https://replicate.com/openai/gpt-image-2.5-flare/api
+
+  - id: replicate.image-gen.gpt-image-2-5-sunburst
+    capability: image-gen.gpt-image-2-5.generate
+    platform: image-gen
+    domain: models
+    scope: any_account
+    method: POST
+    path: /models/openai/gpt-image-2.5-sunburst/predictions
+    name: "openai/gpt-image-2.5-sunburst"
+    summary: "Generate or edit images with GPT Image 2.5 Sunburst through Replicate's official model, priced per image by quality."
+    input:
+      body:
+        input:
+          type: object
+          required: true
+          properties:
+            prompt: {type: string, required: true, example: "A clean editorial illustration of a paper airplane."}
+            quality: {type: string, required: false, default: low, enum: [low, medium, high, xhigh, max], example: low, note: "Price is set by quality; the model's auto tier is not listed because its charge is the dearest listed tier."}
+            aspect_ratio: {type: string, required: false, default: "1:1", enum: ["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"], example: "1:1", note: "Explicit pixel sizes (up to 3840x2160) also exist upstream and are not listed: the per-quality price is quoted for the ratio presets."}
+            input_images: {type: array, required: false, note: "Public image URLs to edit or reference. Each URL must answer a plain GET with the raw image bytes and an image/* content-type (signed cloud-storage or CDN links work; file-page hosts such as tmpfiles.org return HTML and the task fails). `treg host <file>` prints a URL that satisfies this."}
+            number_of_images: {type: integer, required: false, default: 1, min: 1, max: 4, example: 1}
+            output_format: {type: string, required: false, default: webp, enum: [png, jpeg, webp], example: webp}
+            background: {type: string, required: false, default: auto, enum: [auto, opaque, transparent]}
+      bodyType: json
+    test_request:
+      body: {input: {prompt: "A clean editorial illustration of a paper airplane.", quality: low, aspect_ratio: "1:1", number_of_images: 1, output_format: webp}}
+    cost:
+      type: per_success
+      table:
+        - {when: {body.input.quality: low}, value: 0.012, times: body.input.number_of_images}
+        - {when: {body.input.quality: medium}, value: 0.047, times: body.input.number_of_images}
+        - {when: {body.input.quality: high}, value: 0.128, times: body.input.number_of_images}
+        - {when: {body.input.quality: xhigh}, value: 0.25, times: body.input.number_of_images}
+        - {when: {body.input.quality: max}, value: 0.50, times: body.input.number_of_images}
+      fallback: {value: 2.001, note: "Four max-quality images at the documented rate ($2.00), rounded up to clear float comparison."}
+      currency: USD
+      settle: table
+      source: docs
+      source_url: https://replicate.com/openai/gpt-image-2.5-sunburst
+      checked: 2026-09-14
+      confidence: documented
+      note: "Replicate's model page prices per output image by quality tier; times number_of_images."
+    verified: 2026-09-14
+    example_response: examples/replicate.image-gen.gpt-image-2-5-sunburst.json
+    docs_url: https://replicate.com/openai/gpt-image-2.5-sunburst/api

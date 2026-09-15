@@ -1251,6 +1251,14 @@ def test_price_floor_reads_nested_input_fields():
     cat = store.load()
     seedance = cat.cost_view(cat.by_id["replicate.video-gen.seedance-1-lite"]["cost"], "replicate")
     assert seedance["usd_min"] == 0.072  # 480p at the declared 4-second minimum, not 1 second
+    # A duration-priced table is advertised per second (the way the model is sold), cheapest to
+    # dearest resolution; the whole-call floor and ceiling stay for reserve and eligibility.
+    assert (seedance["rate_usd_min"], seedance["rate_usd"], seedance["rate_unit"]) == (0.018, 0.072, "s")
+    reapi = cat.cost_view(cat.by_id["reapi.video-gen.seedance-2-5"]["cost"], "reapi")
+    assert (reapi["rate_usd_min"], reapi["rate_usd"]) == (0.1186, 0.462) and reapi["usd"] == 13.87
+    # An image table multiplies by `n`, not a duration: no per-second rate, the range stays.
+    images = cat.cost_view(cat.by_id["reapi.image-gen.gpt-image-2-5"]["cost"], "reapi")
+    assert "rate_usd" not in images and images["usd_min"] < images["usd"]
 
 
 async def test_idempotent_replay_of_an_async_submission_keeps_the_descriptor(

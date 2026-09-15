@@ -9,6 +9,7 @@ reachability, sitemap membership, FAQ schema that matches the visible page.
 from __future__ import annotations
 
 import html as html_mod
+from pathlib import Path
 import json
 import re
 
@@ -151,7 +152,9 @@ async def test_agents_hub_lists_every_agent(clients: AsyncClient):
     assert r.status_code == 200, r.text[:200]
     html = r.text
     for slug, spec in agent_pages.AGENTS.items():
-        assert f'href="/agents/{slug}"' in html, slug
+        # grok-bot links to /grokbot (the launch page), not /agents/grok-bot
+        href = "/grokbot" if slug == "grok-bot" else f"/agents/{slug}"
+        assert f'href="{href}"' in html, slug
         assert spec["name"] in html, slug
     assert 'href="/agents"' in (await clients.get("/agents/chatgpt")).text  # nav + breadcrumb parent
     assert f"<loc>{_base()}/agents</loc>" in (await clients.get("/sitemap.xml")).text
@@ -381,7 +384,9 @@ async def test_use_cases_hub_lists_every_written_page(clients: AsyncClient):
 
 # Every page that ships, not a hand-kept list: this set grows by 59 as the use-case pages land, and
 # a title that overflows is invisible in exactly the way nobody notices during review.
-ALL_PAGES = ([f"/agents/{a}" for a in agent_pages.AGENTS] + ["/agents", "/use-cases", "/workflows"]
+# Exclude grok-bot: it 301s to /grokbot (the launch page is the canonical).
+ALL_PAGES = ([f"/agents/{a}" for a in agent_pages.AGENTS if a != "grok-bot"]
+             + ["/agents", "/use-cases", "/workflows"]
              + [f"/use-cases/{j}" for j in agent_pages.USE_CASE_PAGES]
              + [f"/workflows/{w}" for w in agent_pages.WORKFLOWS])
 
@@ -612,10 +617,13 @@ async def test_workflow_pages_are_hosted_only(monkeypatch):
 def test_every_workflow_step_capability_and_endpoint_exist():
     """A step names a capability and the endpoint the worked run used. Both must be in the catalog,
     or the page prices a step from nothing."""
+    from treg.routers import web
     cat = catalog_store.load()
     for key, spec in agent_pages.WORKFLOWS.items():
         for name, cap, _asks, ep_id, _why in spec["steps"]:
-            eps = [e for e in cat.for_capability(cap) if e["kind"] not in catalog_store.HIDDEN_KINDS]
+            # the same filter the page applies: a routed meta-row would render as provider "treg"
+            # with no price and drop out of the live total
+            eps = [e for e in cat.for_capability(cap) if web._pub(e)]
             assert eps, (key, name, cap)
             assert ep_id in {e["id"] for e in eps}, (key, name, ep_id)
 
@@ -737,3 +745,20 @@ async def test_routed_rows_never_surface_a_provider_named_treg(clients: AsyncCli
     assert "treg" not in {r["service"] for r in _provider_rows()}
     assert (await clients.get("/tools/treg")).status_code == 404
     assert "/tools/treg<" not in (await clients.get("/sitemap.xml")).text
+
+
+def test_every_workflow_run_has_its_csv_on_disk():
+    """`run.csv` is the href of "Download the CSV of this run"; the route serves
+    src/treg/workflow_runs/<slug>.csv. A workflow whose receipt has no file behind it is a
+    receipt nobody can check."""
+    runs_dir = Path(agent_pages.__file__).parent / "workflow_runs"
+    for slug, spec in agent_pages.WORKFLOWS.items():
+        assert spec["run"]["csv"] == f"/workflows/{slug}.csv", slug
+        assert (runs_dir / f"{slug}.csv").is_file(), f"{slug}: no recorded run CSV"
+
+
+async def test_every_workflow_csv_route_serves(clients: AsyncClient):
+    for slug in agent_pages.WORKFLOWS:
+        r = await clients.get(f"/workflows/{slug}.csv")
+        assert r.status_code == 200, (slug, r.status_code)
+        assert r.headers["content-type"].startswith("text/csv"), slug

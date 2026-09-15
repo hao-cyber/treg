@@ -10,6 +10,8 @@ proposed_capabilities:
   # standalone in the model wall; job-level comparisons stay empty until models are hand-picked.
   video-gen.wan-3-0.from_text: "Generate a Wan 3.0 video from a text prompt"
   video-gen.wan-3-0.from_image: "Animate an image into a Wan 3.0 video"
+  # Shared with reapi.yaml / piapi.yaml: the same model over three routes merges onto one row.
+  video-gen.seedance-2-5.generate: "Seedance 2.5"
 async:
   id_from: id
   poll:
@@ -175,3 +177,52 @@ endpoints:
       note: "Table rows quote the live rate card. Indistinguishable mode-specific SKUs collapse to the highest rate. The matched row is reserved and the terminal usage.cost settles; observed charges can include a minimum or fee absent from pricing_skus, so a settle may exceed its reserve (reconcile lists overruns)."
     unverified: "Image-to-video mode is documented but was not live-called during B-prime verification."
     docs_url: https://openrouter.ai/docs/cookbook/video-generation/image-to-video
+
+  - id: openrouter.video-gen.seedance-2-5
+    capability: video-gen.seedance-2-5.generate
+    platform: video-gen
+    domain: models
+    scope: any_account
+    method: POST
+    path: /videos
+    name: "ByteDance: Seedance 2.5"
+    summary: "Generate 480p or 720p video from a prompt, optionally with first/last-frame images, through OpenRouter's official ByteDance route at the official rate (default content filter)."
+    input:
+      body:
+        model: {type: string, required: true, enum: [bytedance/seedance-2.5], example: bytedance/seedance-2.5}
+        prompt: {type: string, required: true, example: "A paper boat crosses a quiet pond at sunrise."}
+        duration: {type: integer, required: false, default: 4, min: 4, max: 30}
+        resolution: {type: string, required: false, default: 480p, enum: [480p, 720p]}
+        aspect_ratio: {type: string, required: false, default: "16:9", enum: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"]}
+        generate_audio: {type: boolean, required: false, default: true}
+        frame_images:
+          type: array
+          required: false
+          note: "OpenRouter image objects with type image_url, an image_url.url, and frame_type first_frame or last_frame."
+      bodyType: json
+    test_request:
+      body:
+        model: bytedance/seedance-2.5
+        prompt: "A paper boat crosses a quiet pond at sunrise."
+        duration: 4
+        resolution: 480p
+        aspect_ratio: "16:9"
+    cost:
+      type: per_success
+      table:
+        - {when: {body.model: bytedance/seedance-2.5, body.resolution: 480p}, value: 0.1028, times: body.duration}
+        - {when: {body.model: bytedance/seedance-2.5, body.resolution: 720p}, value: 0.2312, times: body.duration}
+      fallback:
+        value: 6.94
+        note: "Thirty seconds of 720p at the official per-second rate ($6.936), rounded up to clear float comparison; the usage-settlement reservation ceiling."
+      currency: USD
+      settle: usage
+      usage: {path: usage.cost, unit: usd}
+      source: rate_card_api
+      source_url: https://openrouter.ai/api/v1/videos/models
+      checked: 2026-09-14
+      confidence: documented
+      note: "The live rate card bills video tokens at $10.70 per million, which is ByteDance's official meter: $0.1028/s at 480p and $0.2312/s at 720p for text or image input. The matched row is reserved and the terminal usage.cost settles: live 2026-09-14 a 4 s 480p clip priced $0.4112 by the table settled usage.cost 0.415481 (1% over, the same unpublished rounding Wan 3.0 shows). A reference-video input (not listed) bills at the cheaper video-input token rate."
+    verified: 2026-09-14
+    example_response: examples/openrouter.video-gen.seedance-2-5.json
+    docs_url: https://openrouter.ai/bytedance/seedance-2.5

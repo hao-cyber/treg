@@ -51,6 +51,12 @@ Named catalog calls with authorization metadata select the provider and grant me
 comparing hosts. This separates Facebook and Instagram tools sharing `graph.facebook.com`;
 the resulting tool enters the same relay without provider-specific relay logic.
 
+A live-verified free `GET` catalog row can declare `platform_auth: anonymous`. The normal team tool
+and team credential still win. If neither exists, `_anonymous_offer` requires the deployment's
+provider allow-list and creates an unmetered virtual tool with no bindings. `relay()` therefore
+forwards the request without injecting any provider credential. The field is generic catalog
+metadata; the resolver and relay contain no provider-specific anonymous path rules.
+
 Cache experiment metadata is attached to the existing `tool_called` event by the call-service
 capture funnel: outcome/reason, comparison and TTL policy, rollout percentage, lookup duration,
 and candidate age/window. It contains no response/request content or cache key. The stable
@@ -116,6 +122,9 @@ Bindings can also stamp provider protocol constants: a format with no `{secret}`
 (Crustdata's required API-version header is the first registry use). It still carries the same secret
 reference for binding validation and lifecycle, and the assignment overwrites a caller-supplied value.
 This is generic binding behavior, not an upstream-specific branch in the relay.
+An anonymous catalog fallback uses the same relay with an empty binding list. It does not strip
+caller headers or rewrite the request; it only omits a credential that treg would otherwise inject.
+The catalog price is free only when the caller does not supply a provider credential header.
 
 **Platform bindings - injecting treg's OWN credential.** A binding with a `platform_setting` key (instead
 of a `secret_id`) injects one of treg's own credentials read from `get_settings()` - the Google Ads
@@ -179,7 +188,9 @@ cancellation cleanup, metering, audit, idempotency, and faithful relay.
   `base_url + path`. **No path → the base URL itself, without a trailing slash** - a tool pinned to a
   full resource (`.../v1/charges`) must relay as-is, since Stripe `404`s `/v1/charges/`.
 
-Named misses also inspect the org's caller-usable own tools on the error path. When a dotted operation
+A named miss whose `<tool>` is an exact catalog id with a path behind it (`reapi.tasks.get/tasks/1`)
+is the own-tool shape applied to the catalog half: it answers `400` naming the endpoint's parameter
+slots and the `--query` form, before any hint below runs. Named misses also inspect the org's caller-usable own tools on the error path. When a dotted operation
 name shares its provider/first segment with one (for example `google-analytics.report` beside the
 connected `google-analytics` tool), the 404 carries `hint` plus `did_you_mean` and points at
 `/call/google-analytics/<path>`. If that dotted name is a real catalog endpoint, the hint follows the
@@ -193,7 +204,14 @@ escape. This prevents an already encoded Search Console property id such as
 `sc-domain%3Aexample.com` becoming double-encoded as `%253A`. Raw `@` remains literal because it is
 a legal path-segment character. This also supports email-path APIs such as Tomba's verifier, which
 rejects `%40` before decoding. Slashes, query/fragment delimiters and invalid percent signs remain
-escaped; URL-passthrough bytes are unchanged. A `retired`/`broken` tombstone is
+escaped; URL-passthrough bytes are unchanged. Before building that URL, an optional catalog `host`
+on a provider that opted in to `catalog_targets` must resolve through
+`OAuthProvider.profile_for_catalog_host` to an exact approved HTTPS base URL. Providers without
+that opt-in keep resolving catalog paths against their primary base URL.
+The approved root keeps its path prefix when `_marketplace_upstream` appends the endpoint path, and
+the selected provider profile supplies the correct credential binding. An unapproved or malformed
+target fails as a treg-owned 502 before reserve and relay; catalog data cannot redirect an injected
+credential to a host of its choice. A `retired`/`broken` tombstone is
 instead refused with 410, its `status_note`, and its optional `superseded_by`, before credentials are
 selected or the relay can run; the refusal is audited as `refused_by=retired`. This ordering is
 deliberate: an org's own tool named exactly like the old catalog id already resolved above and is not
@@ -397,8 +415,8 @@ maybe_overflow` runs a **child cycle** after the primary's settle released its h
 
 1. Route from the in-process route view (`domain.capacity.routes_view`, Orthogonal first), skipping
    an aggregator marked unhealthy (`overflow:<name>` in the capacity view) or without a key; budget
-   check against `OverflowSpend` (`overflow_daily_budget_usd` per aggregator per day; $20 in code,
-   production's value lives in the private Blueprint) on a short session.
+   check against `OverflowSpend` (`overflow_daily_budget_usd` per aggregator per day) on a short
+   session. A deployment's live value belongs in its private operational configuration.
 2. **Child hold**, own id `{call_ref}:overflow`, through the ordinary `_platform_reserve` (tag
    budgets, daily cap, trial allowance apply; an empty balance is the normal 402). Never the parent's
    id: release-by-id is a conditional claim and `_finish_cancelled_call` releases both ids exactly once.
@@ -514,3 +532,8 @@ settlement, archive or replay. This is an explicit size limitation, not support 
 metered JSON. The fault is attributed to treg's buffer limit, not to the provider. Own-key streams
 remain outside this limit. `tests/test_call_response_limits.py` exercises both real HTTP hops,
 CLI output, boundaries, Range, disconnects, settlement evidence, archive and replay behavior.
+
+
+## HarvestAPI integration
+
+Catalog entries can opt into `strict_query`: `_enforce_catalog_query` rejects bodies, undeclared/duplicate query parameters, missing required inputs and unsupported enum values before credential selection. It applies to catalog calls on every tier, leaves unmarked entries unchanged and does not rewrite requests or constrain arbitrary raw own-tool relays. See [HarvestAPI](harvestapi.md).

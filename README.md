@@ -22,8 +22,10 @@ bills fractions of a cent per call.
 
 ## Two kinds of tool, one token
 
-- **The catalog** — external endpoints treg can serve **on its own key**, metered against your
-  team's prepaid balance (**$1.00 free** once per new verified account, on an eligible team). No account with the provider needed.
+- **The catalog** — external endpoints treg can serve with its own key or through a verified public
+  route that needs no provider key. Own-key calls use the team's prepaid balance; anonymous calls
+  are free. No account with the provider is needed. New verified accounts receive **$1.00 free**
+  once, when they create an eligible team.
 - **Your own tools** — anything a teammate registered: a paid API account, an OAuth connection, a
   vendor CLI, a `SKILL.md`. **Your own key always wins over treg's, and those calls are never
   metered.**
@@ -65,6 +67,8 @@ treg balance                                     # exactly what that cost
 
 # (or `treg onboard` for the guided walkthrough)
 ```
+
+Catalog tool inputs are described by `treg catalog get <id>`. Tools marked `strict_query` reject undeclared or repeated query parameters, unsupported values and request bodies.
 
 Your token identifies you on every call (`X-Treg-Token` header) and is the same for all tools.
 Discover what your team has shared: `treg tool ls` · check credential health: `treg health`.
@@ -109,8 +113,11 @@ treg call hunter.people.email.find --query domain=reddit.com --query full_name="
 
 1. your team registered its own tool for that provider → that tool, that key;
 2. your team stored a secret for the provider → injected through a virtual tool;
-3. neither → **treg's own key**, billed to the team's prepaid balance.
+3. neither, and the endpoint has a verified public route → **no provider key**, free;
+4. otherwise → **treg's own key**, billed to the team's prepaid balance.
 
+The anonymous price assumes the caller does not send a provider credential header. The faithful
+relay preserves caller headers, so a caller-supplied provider key can use that key's credits.
 Your own credential always beats treg's, so connecting a key you already pay for makes those calls
 free of the balance rather than duplicating them. An endpoint treg has no published price for is
 **refused**, not served free — you are told to connect your own key instead. Where several providers
@@ -295,7 +302,8 @@ uv run python -m treg keygen   # print a fresh Fernet key for TREG_SECRET_KEY
 > database drivers, and encryption. `pip install tools-registry` alone gives just the `treg` command for
 > talking to an existing registry.
 
-The team instance is hosted on **Render** (web service + Postgres) at `treg.to`.
+The official hosted service is available at `treg.to`. Its production topology and live settings are
+maintained in the private [operator runbook](https://github.com/superdesigndev/treg-internal/blob/main/docs/production/deploy.md).
 
 ## Configuration
 
@@ -312,7 +320,7 @@ Environment variables (prefix `TREG_`, read from `.env`):
 | `TREG_GOOGLE_CLIENT_ID` / `_SECRET`       | *(empty)*                       | Google OAuth sign-in (redirect `<public_url>/auth/google/callback`); empty hides the button                                                                                |
 | `TREG_INSTAGRAM_CLIENT_ID` / `_SECRET`    | *(empty)*                       | Instagram App ID and secret for direct Instagram Login (redirect `<public_url>/oauth/callback`)                                                                           |
 | `TREG_META_CLIENT_ID` / `_SECRET`         | *(empty)*                       | Meta app credentials for Facebook Pages, Meta Ads, and optional Instagram `page-tools`                                                                                     |
-| `TREG_OAUTH_REVIEW_PENDING`               | `instagram-login,page-messages` | Registry review keys awaiting production access. Remove `page-messages` after Page messaging approval; set empty after direct Instagram approval.                         |
+| `TREG_OAUTH_REVIEW_PENDING`               | `instagram-login,page-messages` | Comma-separated registry review keys whose capabilities must remain gated; hosted review state is maintained privately.                                                   |
 | `TREG_RESEND_API_KEY` / `TREG_EMAIL_FROM` | *(empty)*                       | transactional email via Resend (OTP codes + invites); From must be a Resend-verified sender                                                                                |
 | `TREG_BLOCKED_EMAIL_DOMAINS`              | *(empty)*                       | comma-separated email domains refused at every sign-up/sign-in door and at team creation (subdomains included, case-insensitive). Empty blocks nothing — no list ships in the code |
 | `TREG_ADMIN_TOKEN`                        | *(empty)*                       | cross-tenant **super-admin** bearer; authorizes every `/admin/*` endpoint. Empty disables the env path (only `is_superadmin` users reach `/admin`). Keep it long + secret. |
