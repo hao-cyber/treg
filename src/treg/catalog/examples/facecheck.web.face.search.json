@@ -1,5 +1,5 @@
 {
-  "id_search": "3xGmCB1b488",
+  "id_search": "EXAMPLE_SEARCH_ID",
   "message": "Search Completed",
   "progress": 100,
   "error": null,
@@ -7,23 +7,23 @@
   "output": {
     "items": [
       {
-        "guid": "fc4b73feb66b0cb476f8b936d5bf5107",
+        "guid": "example0000000000000000000000000guid0",
         "score": 100,
         "group": 1,
         "base64": "data:image/webp;base64,UklGRlI\u2026(thumbnail truncated)",
-        "url": "https://facebook.com/officialroutineofnepalbanda/photos/a.687947587904704/4726248667407889/?type=3",
+        "url": "https://example.org/page-about-the-person",
         "index": 0,
-        "indexDB": 417205547,
+        "indexDB": 400000000,
         "seen": null
       },
       {
-        "guid": "f7cc186d382d424be4aa0dafe1c4925f",
+        "guid": "example0000000000000000000000000guid1",
         "score": 100,
         "group": 1,
         "base64": "data:image/webp;base64,UklGRlI\u2026(thumbnail truncated)",
-        "url": "https://twitter.com/MelissaWaldrum",
+        "url": "https://example.net/another-public-mention",
         "index": 0,
-        "indexDB": 628838857,
+        "indexDB": 400000001,
         "seen": null
       }
     ],
@@ -41,7 +41,7 @@
     "type": "PAID",
     "HasItems": true,
     "time": 1789464345,
-    "query_hash": "eTIcporDsto",
+    "query_hash": "EXAMPLEHASH01",
     "flags": [
       {
         "type": "SCAMALERT",
@@ -52,12 +52,12 @@
         "text": "Many Accounts <span style=\"white-space:normal\"> (11&nbsp;Facebook, 6&nbsp;Twitter, 4&nbsp;Linkedin)</span>"
       }
     ],
-    "id_search": "3xGmCB1b488"
+    "id_search": "EXAMPLE_SEARCH_ID"
   },
   "input": [
     {
       "base64": "data:image/webp;base64,UklGRl\u2026(thumbnail truncated)",
-      "id_pic": "880942771BA41E74",
+      "id_pic": "EXAMPLE_PIC_ID",
       "url_source": null,
       "svg_anim": null
     }

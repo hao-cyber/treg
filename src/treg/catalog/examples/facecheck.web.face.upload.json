@@ -1,5 +1,5 @@
 {
-  "id_search": "KV7cwKR9JpU",
+  "id_search": "EXAMPLE_SEARCH_ID",
   "message": "1 file uploaded.",
   "progress": null,
   "error": null,
@@ -8,7 +8,7 @@
   "input": [
     {
       "base64": "data:image/webp;base64,UklGRlooAABXRUJQ\u2026(thumbnail truncated)",
-      "id_pic": "880942771BA41E74",
+      "id_pic": "EXAMPLE_PIC_ID",
       "url_source": null,
       "svg_anim": null
     }

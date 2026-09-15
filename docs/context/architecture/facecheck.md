@@ -121,7 +121,9 @@ injection, byte-preserving multipart upload, submission and repeated status poll
 image removal, platform refusal, cache policy and absence of treg money entries.
 
 Search, delete and account-info carry `verified: '2026-09-15'` with scrubbed example responses
-(thumbnails truncated); upload carries its example without a stamp, because a verified endpoint
+(thumbnails truncated; result URLs, search/image IDs and hashes replaced with placeholders — the
+examples show the response shape, not real matches from a biometric search); upload carries its
+example without a stamp, because a verified endpoint
 must keep a re-runnable `test_request` and the stock verifier cannot build multipart file parts.
 The catalog verifier can re-check account info with `--id facecheck.account.usage`; the
 upload/search/delete examples came from manual `--upload` calls. Re-verification needs an
