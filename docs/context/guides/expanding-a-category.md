@@ -43,8 +43,9 @@ Tests extend the existing auth, capacity and marketplace files. See [catalog](..
 
 FaceCheck follows the pasted-token path with raw `Authorization` injection. Its POST account probe
 rejects a bad token through the JSON `error` field even when HTTP is 200. The catalog is explicitly
-own-key only; native POST polling does not fit the shared async descriptor. Positive live checks
-remain unverified. See [FaceCheck](../architecture/facecheck.md).
+own-key only; native POST polling does not fit the shared async descriptor. All four operations
+were live-verified 2026-09-15: a full search costs 3 credits while upload, demo search, polls and
+deletion are free. See [FaceCheck](../architecture/facecheck.md).
 
 ## The two kinds of provider
 - **API-key** (`auth_kind="key"`) — the user pastes a key; self-serve; **the fast path** (research → implement

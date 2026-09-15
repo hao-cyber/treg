@@ -6,8 +6,9 @@ source:
 pricing_url: https://facecheck.id/en/Face-Search/API
 limits: "Own API token required. Search submission and status use the same POST endpoint. Poll explicitly with status_only=true; treg --await is not supported."
 # Complete business API surface from OpenAPI v1.02. /llms.txt is documentation, not a tool.
-# No verified stamps: a valid credential is not available for upload/search/delete/info checks.
-# A live bogus-token /api/info request returned HTTP 200 with a truthy error field.
+# Live-verified 2026-09-15 with a real own-key account through the treg relay: connect probe,
+# upload, demo + paid search, status polling and image deletion. A full search deducted exactly
+# 3 credits ($0.30); upload, demo search, status polls and deletion deducted 0.
 # Shared-key calls stay blocked: POST/body task ownership and once-per-search settlement
 # are not represented by treg's GET-only async descriptor. All responses bypass cache.
 proposed_capabilities:
@@ -30,10 +31,10 @@ endpoints:
     input:
       body:
         images: {type: array, items: {type: string, format: binary}, required: true, note: "Binary file parts in multipart/form-data; use CLI --upload images=@/path/to/photo.jpg, repeat for multiple images. Do not send JSON or a URL string."}
-        id_search: {type: string, required: false, note: "Existing search request to add images to; omit for a new request."}
+        id_search: {type: string, required: false, note: "Existing search request to add images to; omit for a new request. Live 2026-09-15: appending to an already-submitted search is rejected ('You can't add image to this search request')."}
         reset_prev_images: {type: boolean, required: false}
       note: "Requires multipart/form-data with a generated boundary. Use CLI --upload or raw HTTP; JSON-only MCP calls cannot upload a file. Read id_search and input[].id_pic from the response."
-    # The stock verifier cannot build multipart file parts; use a real image through --upload.
+    # The stock verifier cannot build multipart file parts; verified live via --upload instead.
     test_request: {}
     expect: {json_path: error, equals: null}
     cost: &unknown
@@ -42,10 +43,11 @@ endpoints:
       currency: USD
       source: docs
       source_url: https://facecheck.id/en/Face-Search/API
-      checked: '2026-09-11'
+      checked: '2026-09-15'
       confidence: unknown
-      note: "The docs price a complete full search at 3 credits ($0.30), not each HTTP request. Upload, polling, deletion and retry billing have not been verified; own keys only."
+      note: "No per-call figure exists: observed 2026-09-15, one complete full search (upload + submit + polls) deducted exactly 3 credits ($0.30); upload, demo search, status polls and image deletion deducted 0. The deduction attaches to a submitted non-demo search, not to each HTTP request. Own keys only."
     docs_url: https://facecheck.id/Swagger/index.html
+    example_response: examples/facecheck.web.face.upload.json
 
   - id: facecheck.web.face.search
     capability: web.face.search
@@ -66,7 +68,7 @@ endpoints:
         status_only: {type: boolean, required: false, note: "true does not submit a new search. Set false for submission, true for subsequent checks, including after a timeout."}
         demo: {type: boolean, required: false, note: "true searches only the first 100,000 faces without deducting credits; use for protocol testing, not coverage evaluation. Send false for a full paid search."}
         shady_only: {type: boolean, required: false, note: "Present in OpenAPI; semantics are not described. Omit unless confirmed with FaceCheck."}
-      note: "POST repeatedly with status_only=true until output is present or error is non-empty. Match scores do not establish identity. The docs example shows items[].url as a string; OpenAPI declares an object with value. Inspect the actual response; treg relays it unchanged."
+      note: "POST repeatedly with status_only=true until output is present or error is non-empty. Match scores do not establish identity. Live 2026-09-15: items[].url is a string in both demo and paid responses, despite OpenAPI declaring an object with value; treg relays it unchanged. A full search of ~1.47B faces took ~6s compute plus queue time."
     # Replace the placeholder with an ID from an authorized upload; never submit a full search
     # automatically. This test is status-only and demo-only, not a valid success fixture.
     test_request:
@@ -74,6 +76,8 @@ endpoints:
     expect: {json_path: error, equals: null}
     cost: *unknown
     docs_url: https://facecheck.id/en/Face-Search/API
+    verified: '2026-09-15'
+    example_response: examples/facecheck.web.face.search.json
 
   - id: facecheck.web.face.image.delete
     capability: web.face.image.delete
@@ -91,12 +95,14 @@ endpoints:
       queryParams:
         id_search: {type: string, required: true}
         id_pic: {type: string, required: true}
-      note: "Use IDs returned by your own upload. Removes an input image from that search request; this is not an Internet index removal request."
+      note: "Use IDs returned by your own upload. Removes an input image from that search request; this is not an Internet index removal request. Live 2026-09-15: works only before the search is submitted; deleting from a completed search answers HTTP 200 with error 'Not able to delete image' (PIC_NOT_FOUND)."
     test_request:
       queryParams: {id_search: REPLACE_WITH_OWN_SEARCH_ID, id_pic: REPLACE_WITH_OWN_IMAGE_ID}
     expect: {json_path: error, equals: null}
     cost: *unknown
     docs_url: https://facecheck.id/Swagger/index.html
+    verified: '2026-09-15'
+    example_response: examples/facecheck.web.face.image.delete.json
 
   - id: facecheck.account.usage
     capability: account.usage
@@ -115,3 +121,5 @@ endpoints:
     expect: {json_path: error, equals: null}
     cost: *unknown
     docs_url: https://facecheck.id/Swagger/index.html
+    verified: '2026-09-15'
+    example_response: examples/facecheck.account.usage.json

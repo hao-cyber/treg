@@ -3,6 +3,10 @@ title: FaceCheck — own-key face search over the native REST API
 status: shipped
 sources:
   - src/treg/catalog/facecheck.yaml
+  - src/treg/catalog/examples/facecheck.account.usage.json
+  - src/treg/catalog/examples/facecheck.web.face.image.delete.json
+  - src/treg/catalog/examples/facecheck.web.face.search.json
+  - src/treg/catalog/examples/facecheck.web.face.upload.json
   - src/treg/web/logos/facecheck.svg
   - tests/test_facecheck.py
 related:
@@ -70,17 +74,19 @@ Stop on a non-empty `error` or a populated `output`. `with_progress=false` asks 
 for completion; its practical duration and timeout behavior have not been verified. Do not blindly
 resubmit after a timeout. Use the existing search ID to check its state.
 
-The official example treats `output.items[].url` as a string while OpenAPI declares an object
-containing `value`. The actual paid response shape is unverified; the registry preserves either
-shape. A match score is a similarity signal, not a verified identity or a LinkedIn match.
+Live 2026-09-15: `output.items[].url` is a string in both demo and paid responses, matching the
+official example; the OpenAPI declaration of an object containing `value` does not hold. The
+registry preserves the observed shape. A match score is a similarity signal, not a verified
+identity or a LinkedIn match.
 
 ## Billing, isolation and caching
 
 Every row explicitly carries `platform_blocked` and `cache: forbidden`. The provider has no new
 platform-key setting, routed adapter or async descriptor. Own-key calls remain unmetered by treg
-and always reach the upstream, including repeated status checks. The published full-search price
-is three credits at $0.10 each; per-request costs stay unknown because one search spans multiple
-requests and the accounting point, retries and utility costs have not been measured.
+and always reach the upstream, including repeated status checks. Live 2026-09-15: one complete
+full search (upload + submit + status polls) deducted exactly 3 credits ($0.30, matching the
+published price); upload, demo search, polls and image deletion deducted 0. The deduction attaches
+to the submitted non-demo search, not to each HTTP request.
 
 Shared-key operation needs a separate design: current async descriptors only poll GET utilities
 using path/query parameters, whereas FaceCheck uses a POST JSON `id_search`. Uploads can also append
@@ -90,7 +96,18 @@ avoids claiming those contracts exist; each team uses its own provider account.
 
 ## Verification
 
-The native bogus-token response was checked live. The opt-in test below repeats it through the
+Live-verified on 2026-09-15 with a real own-key account through the treg relay: the connection
+probe accepted a valid token, and upload, demo search, paid search, status polling and image
+deletion all round-tripped. Observed behavior beyond the spec:
+
+- One full search deducted exactly 3 credits (12 → 9); demo search, upload, polls and deletion
+  deducted 0. A full run over ~1.47B faces took ~6s compute plus queue time.
+- `output.items[].url` is a string in demo and paid responses (OpenAPI declares an object).
+- Appending an image to an already-submitted search is rejected ("Create a new search request").
+- Image deletion works only before submission; a completed search answers HTTP 200 with
+  `error: "Not able to delete image"` (`PIC_NOT_FOUND`).
+
+The bogus-token path was checked live twice. The opt-in test below repeats it through the
 actual `/connections/token` route using a throwaway test org and the isolated test database, and
 asserts that the rejected token creates neither a connection nor a tool:
 
@@ -103,9 +120,9 @@ Normal tests use synthetic responses to cover zero-balance connection acceptance
 injection, byte-preserving multipart upload, submission and repeated status polling, query-based
 image removal, platform refusal, cache policy and absence of treg money entries.
 
-No endpoint carries `verified` or a captured success example yet: a valid FaceCheck token was not
-available. The catalog verifier can check account info with `--id facecheck.account.usage`; it cannot
-build the upload's multipart file parts. Upload/search/delete require an authorized test image and
-fresh IDs from that upload, not the placeholders in `test_request`. Before claiming live support,
-verify the positive connection and all four operations, inspect actual result URLs, compare credits
-before/after a full search, and scrub any captured account or image data.
+Search, delete and account-info carry `verified: '2026-09-15'` with scrubbed example responses
+(thumbnails truncated); upload carries its example without a stamp, because a verified endpoint
+must keep a re-runnable `test_request` and the stock verifier cannot build multipart file parts.
+The catalog verifier can re-check account info with `--id facecheck.account.usage`; the
+upload/search/delete examples came from manual `--upload` calls. Re-verification needs an
+authorized test image and fresh IDs from that upload, not the placeholders in `test_request`.

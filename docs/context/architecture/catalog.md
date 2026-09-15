@@ -230,9 +230,10 @@ evidence feeds the shared money settlement function; provider variation stays de
 `facecheck.yaml` lists upload, search/status, input-image removal and account info from the native
 OpenAPI. Every operation is explicitly platform-blocked and uncached. POST/body polling and
 multipart search mutation cannot use the current shared-account ownership/async contract, so this
-addition supplies no platform billing or automatic waiting. See [FaceCheck](facecheck.md) for the
-call sequence, price uncertainty and the distinction between live bogus-token rejection and
-synthetic positive-path tests.
+addition supplies no platform billing or automatic waiting. All four operations were live-verified
+with a real own-key account on 2026-09-15. See [FaceCheck](facecheck.md) for the
+call sequence, observed billing (one full search = 3 credits; upload, demo search, polls and
+deletion free) and the bogus-token rejection path.
 
 ## QuickEnrich enrichment (2026-09-08)
 

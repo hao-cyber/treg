@@ -1333,6 +1333,7 @@ FACECHECK = OAuthProvider(
     # Connection-only POST probe: probe_path would also create a GET-only tool health check.
     probe_url="https://facecheck.id/api/info", probe_method="POST", probe_json={},
     # Live 2026-09-11: a bogus token returns HTTP 200 with error="Invalid API token! ...".
+    # Live 2026-09-15: a valid token answers remaining_credits/has_credits_to_search/is_online.
     token_reject_field="error",
     token_required_fields=("remaining_credits", "has_credits_to_search", "is_online"),
 )
