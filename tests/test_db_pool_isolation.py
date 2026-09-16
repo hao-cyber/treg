@@ -36,7 +36,9 @@ EXPECTED_MAKERS: dict[str, set[str]] = {
     "application/asynctasks.py": {API},
     # Interactive paid runs: short transactions between legs, never across upstream waits.
     "application/arena.py": {API},
-    "application/arena_insights.py": {API, BACKGROUND},  # snapshot read vs incremental worker
+    # Snapshot read on the request path; the collector runs in the `treg-worker` process (see
+    # `worker.py` below), where the API pool is the only one in use.
+    "application/arena_insights.py": {API},
     "application/arena_verification_insights.py": {API},  # explicit aggregate publication, no worker
 
     "application/feedback.py": {API},  # synchronous intake; admin reads use get_admin_session
@@ -54,6 +56,8 @@ EXPECTED_MAKERS: dict[str, set[str]] = {
     "domain/identity/api_keys.py": {BACKGROUND},
     # `treg-worker` is its own process; it shares the API pool because nothing else is running in it.
     "worker.py": {API},
+    # Runs only inside `treg-worker catalog stats`; same reasoning as `worker.py`.
+    "application/catalog_stats.py": {API},
     # Staff pages take their pool through `Depends(get_admin_session)`, not a maker import; the one
     # maker here is the retention sweep, which is background work and must not nest inside a request.
     "routers/admin.py": {BACKGROUND},
@@ -170,7 +174,6 @@ BACKGROUND_SITES = {
     "archive.py:prune_once": "archive.prune_worker",
     "archive.py:refresh_once": "archive.refresh_worker",
     "routers/admin.py:_purge_expired_error_evidence": "admin evidence sweep",
-    "application/arena_insights.py:collect_batch": "arena_insights.worker",
 }
 
 

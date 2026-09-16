@@ -19,6 +19,7 @@ AGGREGATORS = ("orthogonal", "monid")
 # capacity_type / funding_mode / source. Anything not listed imports as unknown/unknown and is
 # flagged by the sweep — a policy row must be classified by a person, never guessed by code.
 _KNOWN: dict[str, tuple[str, str, str]] = {
+    "dropleads": ("credits", "manual", "api"),
     "trykitt": ("cash", "manual", "api"),
     "harvestapi": ("cash", "auto_recharge", "api"),  # Owner will enable vendor auto top-up for production.
     "dataforseo": ("cash", "auto_recharge", "api"),
@@ -33,6 +34,7 @@ _KNOWN: dict[str, tuple[str, str, str]] = {
     "tomba": ("monthly_quota", "quota_reset", "api"),
     "hunter": ("monthly_quota", "quota_reset", "api"),
     "quickenrich": ("monthly_quota", "quota_reset", "api"),
+    "prospeo": ("monthly_quota", "quota_reset", "api"),
     "sumble": ("monthly_quota", "quota_reset", "api"),
     "predictleads": ("monthly_quota", "quota_reset", "api"),
     "companyenrich": ("credits", "manual", "api"),
@@ -63,8 +65,12 @@ _QUOTAS: dict[str, dict] = {
     "lusha": {"limit": None, "period": "day", "resets_at_rule": "local_midnight"},
     "hunter": {"limit": None, "period": "billing", "resets_at_rule": "account.reset_date"},
     "quickenrich": {"limit": None, "period": "billing", "resets_at_rule": "subscription renewal; no reset timestamp in API"},
+    "prospeo": {"limit": None, "period": "billing", "resets_at_rule": "account.next_quota_renewal_date"},
 }
 _RATE_LIMITS: dict[str, dict] = {
+    # One shared key serves both 5/s enrichment and 1/s search routes. Until smoothing becomes
+    # endpoint-aware, protect the stricter search allowance and accept conservative enrichment.
+    "prospeo": {"limit": 1, "window_s": 1, "source": "docs"},
     "sumble": {"limit": 10, "window_s": 1, "source": "docs"},
     "leadsforge": {"limit": 120, "window_s": 60, "source": "headers"},
     "leadmagic": {"limit": 300, "window_s": 60, "source": "docs"},

@@ -20,6 +20,9 @@ exists, treat both repositories as one operational workspace:
   private admin tools.
 - Read both repositories before changing production behavior, but never copy credentials, live
   environment exports, customer data or raw logs between them.
+- Everything committed here is public, comments and commit messages included: describe treg.to
+  only by mechanism, never by its numbers, dates, hosts, instance counts or schedules. Those go to
+  `../treg-internal`.
 - Commit and open PRs separately. State the merge order whenever one PR links to or depends on the
   other.
 

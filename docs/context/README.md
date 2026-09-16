@@ -23,6 +23,7 @@ covers (frontmatter `sources:`). Regenerate this index with
 | [Application composition and deployment roles](architecture/composition.md) | shipped | bootstrap.py, bootstrap_handlers.py, bootstrap_http.py, call_surface.py, … |
 | [ContactOut — LinkedIn enrichment, Starter billing and independent credit pools](architecture/contactout.md) | implemented; live connect and core surface verified, informational capacity monitoring | contactout.yaml, adapters.yaml, contactout.people.email.verify.json, test_routing.py, … |
 | [Data model — the registry tables, async DB, audit writer](architecture/data-model.md) | shipped | alembic.ini, env.py, 0001_baseline_current_schema.py, 0002_archive_tables.py, … |
+| [Dropleads — synchronous people and company enrichment](architecture/dropleads.md) | implemented; live upstream behavior verified | dropleads.yaml, dropleads.people.email.find.json, dropleads.people.phone.find.json, dropleads.people.email.verify.json, … |
 | [FaceCheck — own-key face search over the native REST API](architecture/facecheck.md) | shipped | facecheck.yaml, facecheck.account.usage.json, facecheck.web.face.image.delete.json, facecheck.web.face.search.json, … |
 | [Feedback - private intake for problems and suggestions](architecture/feedback.md) | shipped | feedback_contract.py, __init__.py, reports.py, reviews.py, … |
 | [HarvestAPI — API-key-only LinkedIn reads and reported USD charges](architecture/harvestapi.md) | implemented; upstream and local platform/BYOK integration verified | contracts.py, harvestapi.yaml, harvestapi.svg, oauth_providers.py, … |
@@ -34,6 +35,7 @@ covers (frontmatter `sources:`). Regenerate this index with
 | [Media hosting - reference files a vendor can fetch (`treg host`)](architecture/media.md) | shipped | media.py, media.py, models.py, 0037_media_hosting.py, … |
 | [Money — prepaid balance, the ledger, Stripe, and the reports that check it](architecture/money.md) | shipped | __init__.py, settlement.py, __init__.py, models.py, … |
 | [Multi-tenancy — orgs, memberships, invites, per-org scoping](architecture/multi-tenancy.md) | shipped | models.py, api.py, caller_metadata.py, auth.py, … |
+| [Prospeo — people and company enrichment](architecture/prospeo.md) | shipped | prospeo.yaml, prospeo.people.email.find.json, prospeo.people.phone.find.json, prospeo.people.enrich.json, … |
 | [The proxy — faithful credential-injecting relay + tool resolution](architecture/proxy-model.md) | shipped | relay.py, ssrf.py, api.py, authorize.py, … |
 | [Sumble — account intelligence, subscription credits and BYOK](architecture/sumble.md) | shipped | sumble.yaml, sumble.extended.yaml, sumble.organizations.json, sumble.py, … |
 | [Super-admin — cross-tenant read + control](architecture/super-admin.md) | shipped | api.py, admin.py, access.py, config.py |

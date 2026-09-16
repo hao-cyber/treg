@@ -651,3 +651,46 @@ def test_missing_platform_auth_normalizes_as_absent():
         'path': '/values',
     }, 'example', Path('.'))
     assert normalized['platform_auth'] is None
+
+
+def test_dropleads_catalog_surface_is_bounded_and_excludes_internal_routes():
+    catalog = catalog_store.load()
+    rows = [ep for ep in catalog.endpoints if ep["provider"] == "dropleads"]
+    assert len(rows) == 12
+    assert all(catalog.platform_eligible(ep) for ep in rows)
+    assert not any(
+        "credits/balance" in ep["path"] or "export/cost" in ep["path"]
+        for ep in rows
+    )
+    assert {ep.get("host") for ep in rows if ep.get("host")} == {"api.dropleads.io"}
+    assert catalog.by_id["dropleads.companies.search.count"]["capability"] == \
+        "companies.search.count"
+    assert catalog.by_id["dropleads.people.enrich"]["test_request"]["body"] == {
+        "name": "Jane Doe",
+        "organization_name": "Example",
+        "domain": "example.com",
+    }
+    assert catalog.by_id["dropleads.people.enrich.verified"]["test_request"]["body"] == {
+        "name": "Jane Doe",
+        "organization_name": "Example",
+        "domain": "example.com",
+        "email_verification_type": "valid_and_catchall",
+    }
+
+
+def test_prospeo_catalog_surface_excludes_account_info_and_prices_mobile_at_the_documented_maximum():
+    catalog = catalog_store.load()
+    rows = [ep for ep in catalog.endpoints if ep["provider"] == "prospeo"]
+    assert len(rows) == 9
+    assert not any(ep["path"] == "/account-information" for ep in rows)
+    assert {ep["path"] for ep in rows} == {
+        "/enrich-person", "/bulk-enrich-person", "/enrich-company",
+        "/bulk-enrich-company", "/search-person", "/search-company",
+        "/search-suggestions",
+    }
+    phone = catalog.by_id["prospeo.people.phone.find"]
+    assert not phone.get("platform_blocked")
+    assert phone["cost"]["value"] == 10
+    bulk_mobile = catalog.by_id["prospeo.people.enrich.bulk"]["cost"]["modifiers"]
+    assert bulk_mobile["enrich_mobile"]["add_credits_per_result"] == 9
+    assert all(catalog.platform_eligible(ep) for ep in rows)

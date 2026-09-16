@@ -15,6 +15,20 @@
 
 adapters:
   # ---- people.email.find --------------------------------------------------------------------
+  dropleads.people.email.find:
+    accepts: [[first_name, last_name, domain]]
+    in: {first_name: body.first_name, last_name: body.last_name, domain: body.company_domain}
+    out: {email: email, verified: "status == 'valid'"}
+    miss: "email == null"
+  prospeo.people.email.find:
+    accepts: [[full_name, domain], [first_name, last_name, domain], [linkedin_url]]
+    in: {full_name: body.data.full_name, first_name: body.data.first_name,
+         last_name: body.data.last_name, domain: body.data.company_website,
+         linkedin_url: body.data.linkedin_url}
+    const: {body.only_verified_email: true, body.enrich_mobile: false, body.only_verified_mobile: false}
+    out: {email: person.email.email, first_name: person.first_name, last_name: person.last_name,
+          verified: "person.email.status == 'VERIFIED'"}
+    miss: "person.email.email == null"
   trykitt.people.email.find:
     accepts: [[full_name, domain], [first_name, last_name, domain]]
     in: {full_name: body.fullName, domain: body.domain, linkedin_url: body.linkedinStandardProfileURL}
@@ -221,6 +235,20 @@ adapters:
     miss: "data.creator_info.unique_id == null"
 
   # ---- people.phone.find --------------------------------------------------------------------
+  dropleads.people.phone.find:
+    accepts: [[linkedin_url]]
+    in: {linkedin_url: body.linkedin_url}
+    out: {phone: mobile_number, line_type: "'mobile'"}
+    miss: "mobile_number == null"
+  prospeo.people.phone.find:
+    accepts: [[linkedin_url], [email], [full_name, domain], [first_name, last_name, domain]]
+    in: {linkedin_url: body.data.linkedin_url, email: body.data.email,
+         full_name: body.data.full_name, first_name: body.data.first_name,
+         last_name: body.data.last_name, domain: body.data.company_website}
+    const: {body.only_verified_email: false, body.enrich_mobile: true, body.only_verified_mobile: true}
+    out: {phone: person.mobile.mobile_international, line_type: "'mobile'",
+          country_code: person.mobile.mobile_country_code}
+    miss: "person.mobile.mobile_international == null"
   tomba.people.phone.find:
     accepts: [[email], [linkedin_url]]
     in:  {email: queryParams.email, linkedin_url: queryParams.linkedin}
@@ -267,6 +295,11 @@ adapters:
     miss: "data.valid == null"
 
   # ---- people.email.verify ------------------------------------------------------------------
+  dropleads.people.email.verify:
+    accepts: [[email]]
+    in: {email: body.email}
+    out: {valid: "status == 'valid'", status: status}
+    miss: "status == null"
   trykitt.people.email.verify:
     accepts: [[email]]
     in: {email: body.email}
@@ -304,6 +337,27 @@ adapters:
     miss: "data.status == null"
 
   # ---- people.enrich ------------------------------------------------------------------------
+  dropleads.people.enrich:
+    accepts: [[email], [linkedin_url], [first_name, last_name, domain], [full_name, domain]]
+    in: {email: body.email, linkedin_url: body.linkedin_url, first_name: body.first_name,
+         last_name: body.last_name, full_name: body.name, domain: body.domain}
+    test_identity: {full_name: Jane Doe, domain: example.com}
+    out: {full_name: "coalesce(person.name, join(person.first_name, person.last_name))",
+          first_name: person.first_name, last_name: person.last_name, title: person.title,
+          company: person.organization_name, company_domain: person.organization_domain,
+          linkedin_url: person.linkedin_url, location: "join(person.city, person.country)"}
+    miss: "person == null"
+  prospeo.people.enrich:
+    accepts: [[email], [linkedin_url], [full_name, domain], [first_name, last_name, domain]]
+    in: {email: body.data.email, linkedin_url: body.data.linkedin_url,
+         full_name: body.data.full_name, first_name: body.data.first_name,
+         last_name: body.data.last_name, domain: body.data.company_website}
+    const: {body.only_verified_email: false, body.enrich_mobile: false, body.only_verified_mobile: false}
+    out: {full_name: person.full_name, first_name: person.first_name, last_name: person.last_name,
+          title: person.current_job_title, company: company.name, company_domain: company.domain,
+          linkedin_url: person.linkedin_url,
+          location: "join(person.location.city, person.location.state, person.location.country)"}
+    miss: "person == null"
   tomba.people.enrich:
     accepts: [[email]]
     in:  {email: queryParams.email}
@@ -491,6 +545,33 @@ adapters:
     miss: "items == []"
 
   # ---- people.search ------------------------------------------------------------------------
+  dropleads.people.search:
+    accepts: [[company_domain, title], [company_domain], [title]]
+    in: {company_domain: body.filters.companyDomains, title: body.filters.jobTitles}
+    in_expr:
+      body.filters.companyDomains: "list(company_domain)"
+      body.filters.jobTitles: "list(title)"
+      body.filters.countries: "list(country_name(country))"
+      body.filters.cities: "list(location)"
+      body.filters.keywords: "list(keywords)"
+      body.pagination.limit: limit
+    const: {body.pagination.page: 1}
+    out: {people: data.leads, count: data.total}
+    miss: "data.leads == []"
+  prospeo.people.search:
+    accepts: [[q], [company_domain], [title, company_domain], [title]]
+    in: {q: body.filters.person_name_or_job_title,
+         company_domain: body.filters.company.websites.include,
+         title: body.filters.person_job_title.include}
+    in_expr:
+      body.filters.company.websites.include: "list(company_domain)"
+      body.filters.person_job_title.include: "list(title)"
+      body.filters.person_job_title.match_mode: "choose(title, 'CONTAINS', null)"
+      body.filters.person_location_search.include: "list(country_name(country))"
+    const: {body.page: 1}
+    # Prospeo fixes pages at 25, so there is no honest `limit` input to forward. Return its total.
+    out: {people: results, count: pagination.total_count}
+    miss: "results == []"
   exa.people.search:
     accepts: [[q]]
     in:  {q: body.query}
@@ -582,6 +663,27 @@ adapters:
     miss: "results[0].error != null"
 
   # ---- companies.enrich (batch 5, 2026-08-28) --------------------------------------------------
+  dropleads.companies.enrich:
+    accepts: [[domain], [name]]
+    in: {domain: body.domains, name: body.companyNames}
+    in_expr: {body.domains: "list(domain)", body.companyNames: "list(name)"}
+    out: {name: "data.companies[0].name", domain: "data.companies[0].domain",
+          website: "data.companies[0].websiteUrl", description: "data.companies[0].description",
+          industry: "data.companies[0].industry", employees: "data.companies[0].employees",
+          founded: "data.companies[0].yearFounded",
+          location: "join(data.companies[0].city, data.companies[0].country)",
+          linkedin_url: "data.companies[0].linkedinUrl"}
+    miss: "data.companies == []"
+  prospeo.companies.enrich:
+    accepts: [[domain], [name], [linkedin_url]]
+    in: {domain: body.data.company_website, name: body.data.company_name,
+         linkedin_url: body.data.company_linkedin_url}
+    out: {name: company.name, domain: company.domain, website: company.website,
+          description: company.description, industry: company.industry,
+          employees: company.employee_count, founded: company.founded,
+          location: "join(company.location.city, company.location.state, company.location.country)",
+          linkedin_url: company.linkedin_url}
+    miss: "company == null"
   thecompaniesapi.companies.enrich:
     accepts: [[domain]]
     in:  {domain: pathParams.domain}
@@ -727,6 +829,35 @@ adapters:
   # coresignal.companies.enrich: no example (402 at capture, empty account).
 
   # ---- companies.search (batch 5, 2026-08-28) --------------------------------------------------
+  dropleads.companies.search:
+    accepts: [[domain], [name], [industry], [technology]]
+    in: {domain: body.filters.companyDomains, name: body.filters.companyNames,
+         industry: body.filters.industries, technology: body.filters.technologies}
+    in_expr:
+      body.filters.companyDomains: "list(domain)"
+      body.filters.companyNames: "list(name)"
+      body.filters.industries: "list(industry)"
+      body.filters.technologies: "list(technology)"
+      body.filters.countries: "obj('include', list(country_name(country)))"
+      body.pagination.limit: limit
+    const: {body.pagination.page: 1}
+    out: {companies: data.companies, count: data.total}
+    miss: "data.companies == []"
+  prospeo.companies.search:
+    accepts: [[domain], [name], [industry], [technology]]
+    in: {domain: body.filters.company.websites.include, name: body.filters.company.names.include,
+         industry: body.filters.company_industry.include,
+         technology: body.filters.company_technology.include}
+    in_expr:
+      body.filters.company.websites.include: "list(domain)"
+      body.filters.company.names.include: "list(name)"
+      body.filters.company_industry.include: "list(industry)"
+      body.filters.company_technology.include: "list(technology)"
+      body.filters.company_location_search.include: "list(country_name(country))"
+    const: {body.page: 1}
+    # Prospeo fixes pages at 25, so there is no honest `limit` input to forward. Return its total.
+    out: {companies: results, count: pagination.total_count}
+    miss: "results == []"
   exa.companies.search:
     accepts: [[q]]
     in:  {q: body.query}

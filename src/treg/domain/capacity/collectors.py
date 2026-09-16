@@ -104,6 +104,25 @@ async def _harvestapi(c, key):
                     "Auto top-up is managed in HarvestAPI."}
 
 
+async def _dropleads(c, key):
+    d = await _get(c, "https://prime.dropleads.io/api/v2/prime-db/credits/balance",
+                   headers={"X-API-Key": key})
+    credits = d.get("credits") if isinstance(d, dict) and d.get("success") is True else None
+    remaining = credits.get("totalAvailable") if isinstance(credits, dict) else None
+    if (type(remaining) not in (int, float) or not math.isfinite(remaining)
+            or remaining < 0):
+        remaining = None
+    subscription = credits.get("subscription") if isinstance(credits, dict) else None
+    payg = credits.get("payg") if isinstance(credits, dict) else None
+    use_payg = credits.get("usePayg") if isinstance(credits, dict) else None
+    return {
+        "value": remaining,
+        "unit": "credits",
+        "note": f"subscription {subscription}, PAYG {payg}, use PAYG {use_payg}; "
+                "totalAvailable is the spendable balance",
+    }
+
+
 async def _quickenrich(c, key):
     # Free discovery carries the remaining subscription allowance; no account endpoint exists.
     r = await c.post("https://app.quickenrich.io/api/employees/contact-finder",
@@ -119,6 +138,23 @@ async def _quickenrich(c, key):
         return {"value": None, "unit": "credits", "note": "No finite subscription allowance reported; check QuickEnrich plan"}
     return {"value": remaining, "unit": "credits",
             "note": "Subscription allowance; resets at renewal, no auto-top-up. Reset date not reported."}
+
+
+async def _prospeo(c, key):
+    d = await _get(c, "https://api.prospeo.io/account-information",
+                   headers={"X-KEY": key})
+    response = d.get("response") if isinstance(d, dict) and d.get("error") is False else None
+    remaining = response.get("remaining_credits") if isinstance(response, dict) else None
+    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)) \
+            or not math.isfinite(remaining) or remaining < 0:
+        raise ValueError("Prospeo returned no valid remaining-credit balance")
+    return {
+        "value": remaining,
+        "unit": "credits",
+        "note": (f"plan {response.get('current_plan', 'unknown')}, "
+                 f"{response.get('used_credits', 'unknown')} used, renews "
+                 f"{response.get('next_quota_renewal_date', 'unknown')}"),
+    }
 
 
 async def _hunter(c, key):
@@ -441,6 +477,7 @@ BALANCE_ROUTES = {
     "akta": _akta,
     "brightdata": _brightdata,
     "crustdata": _crustdata,
+    "dropleads": _dropleads,
     "fiber_ai": _fiber_ai,
     "spyfu": _spyfu,
     "icypeas": _icypeas,
@@ -465,6 +502,7 @@ BALANCE_ROUTES = {
     "hunter": _hunter,
     "harvestapi": _harvestapi,
     "quickenrich": _quickenrich,
+    "prospeo": _prospeo,
     "sumble": _sumble,
     "trykitt": _trykitt,
     "contactout": _contactout,

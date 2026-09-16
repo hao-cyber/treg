@@ -78,9 +78,19 @@ closed maintenance loop. Calling `maintenance.upgrade()` directly does not dispo
   `database_url` is not SQLite, `verify_db()` raises. On SQLite development it logs a warning.
 
 For PostgreSQL, migrations set bounded lock and statement timeouts. A contended ordinary DDL
-migration must fail cleanly rather than queue production traffic behind an exclusive lock. The one
-sanctioned exception is `CREATE INDEX CONCURRENTLY` in its own revision. Such a revision owns its
-longer timeouts and must detect and rebuild an invalid index left by interruption.
+migration must fail cleanly rather than queue production traffic behind an exclusive lock: while an
+`ALTER TABLE` waits for its `ACCESS EXCLUSIVE` lock, every later query on that table queues behind
+it, so the 5 s `lock_timeout` is the longest stall a deploy may inflict and no revision may raise it
+for an `ALTER`. A deploy waits longer by retrying instead: `maintenance` re-runs `alembic upgrade
+head` up to `LOCK_RETRY_ATTEMPTS` times after a lock timeout, pausing a jittered few seconds between
+attempts so the table's short transactions can drain, and `env.py` commits each revision on its own
+(`transaction_per_migration`) so a retry resumes at the revision that timed out. Any other error
+fails the deploy at once. The one sanctioned exception to the 5 s cap is `CREATE INDEX CONCURRENTLY`
+in its own revision: its lock blocks nobody while it waits, so such a revision owns its longer
+timeouts and must detect and rebuild an invalid index left by interruption.
+
+Hot-table ALTERs stay cheap to retry when they sit in their own revision, add only nullable columns
+without defaults (metadata-only in PostgreSQL) and leave backfills and `NOT NULL` to later steps.
 
 Deploy schema changes before starting application or worker code that expects the new revision. A
 platform whose scheduled workers update independently must sequence them accordingly.
@@ -227,10 +237,19 @@ without importing the heavy database stack into the light `treg` CLI.
 - `treg-worker overflow verify` obtains route evidence and spends real money when configured.
 - `treg-worker overflow sync` derives enabled overflow routes from current evidence.
 - `treg-worker asynctasks settle` completes durable holds for asynchronous upstream operations.
+- `treg-worker arena insights` folds new audit rows into the rolling Arena aggregate
+  (`--max-seconds`, default 110, bounds one pass; schedule it every two minutes).
+- `treg-worker catalog stats` folds new audit rows into per-endpoint, per-day reliability buckets
+  (`--max-rows`, default 500,000, bounds one pass; schedule it every few minutes). The catalog keeps
+  computing observations live until this command has caught up once, so it can be scheduled after
+  the application deploys, and a self-hosted registry that never schedules it loses nothing.
 
-Workers call read-only `verify_db()` before work and must run against a compatible schema. They need
-only the credentials and configuration required by their job. Hosting schedules, service wiring and
-manual production procedures belong in the private deployment runbook.
+The two analytics commands exist so that no web process aggregates the audit table beside the
+money path; `callrecord` is read only through the persisted cursors they own. Workers call
+read-only `verify_db()` before work and must run against a compatible schema. They need only the
+credentials and configuration required by their job (the two analytics commands need only the
+database URL). Hosting schedules, service wiring and manual production procedures belong in the
+private deployment runbook.
 
 
 Managed-key rollout uses revisions `0034` through `0036`. Apply the key controls and generation

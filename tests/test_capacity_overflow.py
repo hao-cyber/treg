@@ -803,7 +803,10 @@ def test_contactout_only_verified_compatible_candidates_enable():
         if row['provider']!='contactout': continue
         ep=cat.by_id[row['endpoint_id']];cv=cat.cost_view(ep['cost'],'contactout')
         route=OverflowRoute(**{k:row[k] for k in ('endpoint_id','aggregator','provider','method','path','agg_slug','agg_path','agg_unit')},agg_price_micro=round(row['agg_price_usd']*1e6),ratio=R.price_ratio(row['agg_price_usd'],R.our_event_usd(cv)),last_verified_at=datetime.fromisoformat(row['verified_at']) if row['verified_at'] else None)
-        verdict=R.eligible(route,our_cost=ep['cost'],platform_eligible=True,policy=None,our_usd=cv['usd'])
+        verdict=R.eligible(
+            route, our_cost=ep['cost'], platform_eligible=True, policy=None,
+            our_usd=cv['usd'], now=route.last_verified_at,
+        )
         if verdict.enabled:
             enabled.append((row['endpoint_id'],row['aggregator']))
             assert row['verified_at']

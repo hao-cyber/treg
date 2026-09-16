@@ -175,11 +175,65 @@ def test_no_balance_api_includes_expected_providers():
 def test_implemented_collectors_are_registered_and_do_not_overlap_absent_list():
     """A collector that parses a vendor must be on BALANCE_ROUTES, and a provider
     cannot be both 'we collect' and 'there is no balance API'."""
-    for provider in ("akta", "brightdata", "crustdata"):
+    for provider in ("akta", "brightdata", "crustdata", "dropleads", "prospeo"):
         assert provider in collectors.BALANCE_ROUTES
         assert provider not in collectors.NO_BALANCE_API
     overlap = set(collectors.BALANCE_ROUTES.keys()) & set(collectors.NO_BALANCE_API.keys())
     assert not overlap, f"Providers in both maps: {overlap}"
+
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [
+        ({"success": True, "credits": {"totalAvailable": 94.6, "subscription": 0,
+                                         "payg": 94.6, "usePayg": True}}, 94.6),
+        ({"success": True, "credits": {"totalAvailable": 0}}, 0),
+        ({"success": True, "credits": {"totalAvailable": -1}}, None),
+        ({"success": True, "credits": {"totalAvailable": True}}, None),
+        ({"success": False, "credits": {"totalAvailable": 10}}, None),
+    ],
+)
+async def test_dropleads_balance_collector_uses_total_available(payload, expected):
+    def serve(request):
+        assert request.url.path == "/api/v2/prime-db/credits/balance"
+        assert request.headers["x-api-key"] == "test-key"
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as upstream:
+        row = await collectors._dropleads(upstream, "test-key")
+    assert row["value"] == expected
+    assert row["unit"] == "credits"
+
+
+@pytest.mark.parametrize("remaining,expected", [(1987, 1987), (0, 0), (-1, None), (True, None)])
+async def test_prospeo_balance_collector_uses_remaining_credits(remaining, expected):
+    def serve(request):
+        assert request.url.path == "/account-information"
+        assert request.headers["x-key"] == "test-key"
+        return httpx.Response(200, json={
+            "error": False,
+            "response": {
+                "current_plan": "STARTER",
+                "remaining_credits": remaining,
+                "used_credits": 13,
+                "next_quota_renewal_date": "2026-10-16T00:00:00Z",
+            },
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as upstream:
+        if expected is None:
+            with pytest.raises(ValueError):
+                await collectors._prospeo(upstream, "test-key")
+        else:
+            row = await collectors._prospeo(upstream, "test-key")
+            assert row["value"] == expected
+            assert row["unit"] == "credits"
+            assert "plan STARTER" in row["note"]
+
+
+def test_prospeo_policy_smooths_at_the_stricter_shared_key_rate():
+    row = policy.default_policy("prospeo", has_key=True)
+    assert row.rate_limit == {"limit": 1, "window_s": 1, "source": "docs"}
 
 
 @pytest.mark.parametrize('remaining,expected', [(300, 300), (0, 0), (None, None), (-1, None), ('unlimited', None), (True, None)])

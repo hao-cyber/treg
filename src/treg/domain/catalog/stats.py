@@ -26,7 +26,10 @@ its JSON provenance).
 
 from __future__ import annotations
 
-from collections.abc import Collection
+import math
+import random
+from collections.abc import Collection, Iterable
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, TypeAlias
 
@@ -39,9 +42,196 @@ from ...models import CallRecord
 WINDOW_DAYS = 30
 MIN_SAMPLES = 5          # below this we publish the count and nothing else (see module docstring)
 _MAX_ROWS = 20_000       # bound the latency fetch; percentiles do not get truer past this
+# Successful durations kept per endpoint per day in the folded read model (`EndpointDayStat`).
+# Thirty days of these is 12,000 values, the same order as `_MAX_ROWS`; past that a percentile
+# does not get truer, it only gets dearer to store and read.
+LATENCY_SAMPLE = 400
 
 EndpointObservation: TypeAlias = dict[str, int | float | None]
 ObservationSnapshot: TypeAlias = dict[str, EndpointObservation]
+
+
+@dataclass
+class Tally:
+    """The evidence about one endpoint, before any judgement is applied to it.
+
+    One `Tally` is one UTC day of one endpoint in the folded read model, or the whole window when
+    the days are merged, or the whole window straight from `callrecord` in `observed()`. All three
+    reach the same numbers through `publish`, so the rules about what counts (a 4xx is the
+    caller's fault, a 405 is the catalog's, a refusal is nobody's evidence) live in exactly one
+    place each: the SQL in `observed` and the Python in `fold`, and the tests hold them equal.
+    """
+
+    n: int = 0
+    ok: int = 0
+    bad: int = 0
+    last_ok: datetime | None = None
+    hits: int = 0
+    hit_decided: int = 0
+    paid_hits: int = 0
+    free_misses: int = 0
+    # Successful durations. `latency_seen` counts every one folded in; `latencies` keeps at most
+    # `LATENCY_SAMPLE` of them, a uniform reservoir (Vitter's algorithm R) so a busy day's
+    # percentiles are as honest as a quiet day's exact list. `latency_weights`, parallel to
+    # `latencies`, is empty while a tally is one uniform sample and is filled by `merge`: a merged
+    # window must weight each sample by the calls it stands for, or a day with ten thousand calls
+    # and a day with ten would count the same and the window's p95 would be the quiet day's.
+    latency_seen: int = 0
+    latencies: list[int] = field(default_factory=list)
+    latency_weights: list[float] = field(default_factory=list)
+
+    def _weights(self) -> list[float]:
+        if self.latency_weights:
+            return list(self.latency_weights)
+        if not self.latencies:
+            return []
+        return [self.latency_seen / len(self.latencies)] * len(self.latencies)
+
+    def fold(self, *, status_code: int, created_at: datetime, duration_ms: int | None,
+             hit: bool | None, cost_observed_micro: int | None, refused_by: str | None,
+             rng: random.Random | None = None) -> bool:
+        """Fold one audit row in. Returns False when the row is not evidence about the endpoint.
+
+        Mirrors the predicates in `observed()` exactly; see its docstring for why each one is
+        what it is.
+        """
+        if refused_by is not None:
+            return False     # treg said no before a byte went upstream: the caller's account, not the endpoint
+        self.n += 1
+        success = status_code < 300
+        if success:
+            self.ok += 1
+            if self.last_ok is None or created_at > self.last_ok:
+                self.last_ok = created_at
+        elif status_code >= 500 or status_code == 405:
+            self.bad += 1
+        if hit is not None:
+            self.hit_decided += 1
+            if hit:
+                self.hits += 1
+        elif success and cost_observed_micro is not None:
+            if cost_observed_micro > 0:
+                self.paid_hits += 1
+            elif cost_observed_micro == 0:
+                self.free_misses += 1
+        if success and duration_ms is not None:
+            self.latency_seen += 1
+            ms = int(duration_ms)
+            if len(self.latencies) < LATENCY_SAMPLE:
+                self.latencies.append(ms)
+            else:
+                slot = (rng or random).randrange(self.latency_seen)
+                if slot < LATENCY_SAMPLE:
+                    self.latencies[slot] = ms
+        return True
+
+    def merge(self, other: "Tally") -> "Tally":
+        """Sum two tallies (e.g. thirty days into a window). Samples concatenate with weights:
+        each day's reservoir is uniform over that day, so a sample from a day with `seen` calls
+        and `kept` samples stands for `seen / kept` calls, and the window's percentile is taken
+        over those weights. A merged tally is never folded into again."""
+        weights = self._weights() + other._weights()
+        self.n += other.n
+        self.ok += other.ok
+        self.bad += other.bad
+        if other.last_ok is not None and (self.last_ok is None or other.last_ok > self.last_ok):
+            self.last_ok = other.last_ok
+        self.hits += other.hits
+        self.hit_decided += other.hit_decided
+        self.paid_hits += other.paid_hits
+        self.free_misses += other.free_misses
+        self.latency_seen += other.latency_seen
+        self.latencies = self.latencies + other.latencies
+        self.latency_weights = weights
+        return self
+
+    def percentile(self, q: float) -> int | None:
+        """Nearest-rank percentile of the successful durations, by weight when the samples stand
+        for different numbers of calls (a merged window), plain when they are one uniform sample
+        (a single day, or the live query's rows)."""
+        if not self.latencies:
+            return None
+        if not self.latency_weights:
+            return _pct(sorted(self.latencies), q)
+        pairs = sorted(zip(self.latencies, self.latency_weights))
+        total = sum(w for _, w in pairs)
+        target = q * total - 1e-9      # the same rank rule as `_pct`, over weight instead of count
+        acc = 0.0
+        for value, weight in pairs:
+            acc += weight
+            if acc >= target:
+                return int(value)
+        return int(pairs[-1][0])
+
+
+def publish(endpoint_ids: Iterable[str], tallies: dict[str, Tally], *,
+            per_success: set[str] | None = None, now: datetime | None = None) -> ObservationSnapshot:
+    """Turn evidence into what the catalog may say about it: the floors, the rounding, and the
+    honest emptiness for an endpoint nobody has called. Every reader path ends here."""
+    at = now or _now()
+    out: dict[str, dict] = {}
+    for ep_id, t in tallies.items():
+        hits, hit_decided = t.hits, t.hit_decided
+        if ep_id in (per_success or ()):
+            hits += t.paid_hits
+            hit_decided += t.paid_hits + t.free_misses
+        hit_rate = round(hits / hit_decided, 4) if hit_decided >= MIN_HIT_SAMPLES else None
+        decided = t.ok + t.bad          # 4xx excluded — the caller's fault, not the provider's
+        if decided < MIN_SAMPLES:
+            # Honest emptiness: say how thin the evidence is, claim nothing from it. An earlier
+            # revision of this fix published `any_ok` here — "has it EVER answered?" — on the
+            # argument that a yes/no survives any sample size. It doesn't survive THIS module's
+            # own two rules, and it broke both. It leaked outcome (not just volume) about a single
+            # tenant's single call on a quiet endpoint, which is what the floor exists to prevent;
+            # and because `samples` counts 4xx while `ok` does not, one caller's malformed 422
+            # produced `any_ok: false` and made a healthy endpoint look broken to everybody — the
+            # exact failure the 4xx rule below is written to stop. "Never worked" is now read off
+            # `ok_rate == 0`, which is computed only from DECIDED (2xx vs 5xx) samples above the
+            # floor, so it cannot be inferred from caller errors at all. The floor must therefore
+            # be tested against `decided`, not total traffic: four 422s plus one 405 previously
+            # published the outcome of that ONE decided call as 0%, violating both the evidence
+            # and privacy reasons for having the floor.
+            out[ep_id] = {"samples": t.n, "decided": decided, "ok_rate": None,
+                          "p50_ms": None, "p95_ms": None, "last_ok_days": None,
+                          "hit_rate": hit_rate, "hit_samples": hit_decided}
+            continue
+        enough_latency = len(t.latencies) >= MIN_SAMPLES
+        out[ep_id] = {
+            "samples": t.n,
+            # `decided` is the denominator of ok_rate (2xx + 5xx). Anything aggregating rates
+            # across endpoints must weight by this, not by `samples`, which still counts 4xx.
+            "decided": decided,
+            "ok_rate": round(t.ok / decided, 4) if decided else None,
+            # A rate may rest on five decided calls while only one succeeded. Calling that single
+            # duration p50 AND p95 dresses one observation up as a distribution, so latency has
+            # its own successful-sample floor.
+            "p50_ms": t.percentile(0.50) if enough_latency else None,
+            "p95_ms": t.percentile(0.95) if enough_latency else None,
+            "last_ok_days": (at - t.last_ok).days if t.last_ok else None,
+            "hit_rate": hit_rate, "hit_samples": hit_decided,
+        }
+    for ep_id in endpoint_ids:       # an endpoint nobody has called says so, rather than vanishing
+        out.setdefault(ep_id, {"samples": 0, "decided": 0, "ok_rate": None,
+                               "p50_ms": None, "p95_ms": None, "last_ok_days": None,
+                               "hit_rate": None, "hit_samples": 0})
+    return out
+
+
+def window_days(now: datetime | None = None, *, days: int = WINDOW_DAYS) -> str:
+    """The first UTC day (`YYYY-MM-DD`) a folded bucket must have to fall inside the window.
+
+    The live query cuts at an exact instant thirty days back; the folded model is kept per whole
+    day, so its window is that instant's day and everything after it — up to one day more of
+    evidence, never less."""
+    return ((now or _now()) - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def merged(rows: Iterable[tuple[str, Tally]]) -> dict[str, Tally]:
+    """Sum per-day tallies into one per endpoint."""
+    out: dict[str, Tally] = {}
+    for ep_id, day_tally in rows:
+        out.setdefault(ep_id, Tally()).merge(day_tally)
+    return out
 
 
 class EndpointObservationReader(Protocol):
@@ -60,12 +250,16 @@ def _now() -> datetime:
 
 
 def _pct(sorted_values: list[int], q: float) -> int | None:
-    """Nearest-rank percentile. Deliberately not interpolated: these are milliseconds off a wire,
-    and a reader comparing providers gains nothing from a fractional millisecond."""
+    """Nearest-rank percentile: the smallest value at or above which lie `q` of the samples
+    (rank `ceil(q * n)`). Deliberately not interpolated: these are milliseconds off a wire, and a
+    reader comparing providers gains nothing from a fractional millisecond. `Tally.percentile`
+    applies the same rule over weighted samples, so a merged window and a live aggregate of the
+    same rows agree to the millisecond."""
     if not sorted_values:
         return None
-    i = max(0, min(len(sorted_values) - 1, int(round(q * (len(sorted_values) - 1)))))
-    return int(sorted_values[i])
+    n = len(sorted_values)
+    k = max(1, min(n, math.ceil(q * n - 1e-9)))
+    return int(sorted_values[k - 1])
 
 
 MIN_HIT_SAMPLES = 20     # a hit rate below this many decided lookups is published as None
@@ -148,51 +342,12 @@ async def observed(
     for ep_id, ms in lat:
         by_id.setdefault(ep_id, []).append(int(ms))
 
-    out: dict[str, dict] = {}
+    tallies: dict[str, Tally] = {}
     for ep_id, n, ok, bad, last_ok, hits, hit_decided, paid_hits, free_misses in rows:
-        n, ok, bad = int(n or 0), int(ok or 0), int(bad or 0)
-        hits, hit_decided = int(hits or 0), int(hit_decided or 0)
-        if ep_id in (per_success or ()):
-            hits += int(paid_hits or 0)
-            hit_decided += int(paid_hits or 0) + int(free_misses or 0)
-        hit_rate = round(hits / hit_decided, 4) if hit_decided >= MIN_HIT_SAMPLES else None
-        decided = ok + bad          # 4xx excluded — the caller's fault, not the provider's
-        if decided < MIN_SAMPLES:
-            # Honest emptiness: say how thin the evidence is, claim nothing from it. An earlier
-            # revision of this fix published `any_ok` here — "has it EVER answered?" — on the
-            # argument that a yes/no survives any sample size. It doesn't survive THIS module's
-            # own two rules, and it broke both. It leaked outcome (not just volume) about a single
-            # tenant's single call on a quiet endpoint, which is what the floor exists to prevent;
-            # and because `samples` counts 4xx while `ok` does not, one caller's malformed 422
-            # produced `any_ok: false` and made a healthy endpoint look broken to everybody — the
-            # exact failure the 4xx rule below is written to stop. "Never worked" is now read off
-            # `ok_rate == 0`, which is computed only from DECIDED (2xx vs 5xx) samples above the
-            # floor, so it cannot be inferred from caller errors at all. The floor must therefore
-            # be tested against `decided`, not total traffic: four 422s plus one 405 previously
-            # published the outcome of that ONE decided call as 0%, violating both the evidence
-            # and privacy reasons for having the floor.
-            out[ep_id] = {"samples": n, "decided": decided, "ok_rate": None,
-                          "p50_ms": None, "p95_ms": None, "last_ok_days": None,
-                          "hit_rate": hit_rate, "hit_samples": hit_decided}
-            continue
-        ms = sorted(by_id.get(ep_id, []))
-        enough_latency = len(ms) >= MIN_SAMPLES
-        out[ep_id] = {
-            "samples": n,
-            # `decided` is the denominator of ok_rate (2xx + 5xx). Anything aggregating rates
-            # across endpoints must weight by this, not by `samples`, which still counts 4xx.
-            "decided": decided,
-            "ok_rate": round(ok / decided, 4) if decided else None,
-            # A rate may rest on five decided calls while only one succeeded. Calling that single
-            # duration p50 AND p95 dresses one observation up as a distribution, so latency has
-            # its own successful-sample floor.
-            "p50_ms": _pct(ms, 0.50) if enough_latency else None,
-            "p95_ms": _pct(ms, 0.95) if enough_latency else None,
-            "last_ok_days": (_now() - last_ok).days if last_ok else None,
-            "hit_rate": hit_rate, "hit_samples": hit_decided,
-        }
-    for ep_id in ids:                # an endpoint nobody has called says so, rather than vanishing
-        out.setdefault(ep_id, {"samples": 0, "decided": 0, "ok_rate": None,
-                               "p50_ms": None, "p95_ms": None, "last_ok_days": None,
-                               "hit_rate": None, "hit_samples": 0})
-    return out
+        tallies[ep_id] = Tally(
+            n=int(n or 0), ok=int(ok or 0), bad=int(bad or 0), last_ok=last_ok,
+            hits=int(hits or 0), hit_decided=int(hit_decided or 0),
+            paid_hits=int(paid_hits or 0), free_misses=int(free_misses or 0),
+            latency_seen=len(by_id.get(ep_id, [])), latencies=by_id.get(ep_id, []),
+        )
+    return publish(ids, tallies, per_success=per_success)

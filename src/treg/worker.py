@@ -4,11 +4,17 @@
     treg-worker overflow sync [--live]          # seed (+ live aggregator catalogs) → overflow_route
     treg-worker overflow verify [--all] [--max-usd 0.02]   # weekly re-verify of enabled routes
     treg-worker asynctasks settle [--limit 50]       # complete deferred metered-call holds
+    treg-worker arena insights [--max-seconds 110]   # fold new audit rows into the Arena aggregate
+    treg-worker catalog stats [--max-rows 500000]    # fold new audit rows into per-day endpoint stats
 
 Not the light `treg` CLI: these need the server extra (DB, platform keys in the env) and make
 outbound calls to third parties, so they run as Render cron jobs with the server's env — never as
 dataplane lifespan work (refactor plan §2.2). The worker never originates a money movement. It may
 complete a hold opened by the request path, settling or releasing it with full call and org attribution.
+
+The two analytics commands exist so that no web process walks `callrecord` next to the money path:
+each is a bounded incremental pass over the audit table that a cron repeats, and the request path
+reads only what they published.
 """
 
 from __future__ import annotations
@@ -241,6 +247,26 @@ async def _asynctasks_settle(args) -> int:
     return 0
 
 
+async def _arena_insights(args) -> int:
+    from .infra.db import verify_db
+    from .application.arena_insights import drain
+
+    await verify_db()
+    result = await drain(max_seconds=args.max_seconds)
+    print(json.dumps(result, sort_keys=True))
+    return 1 if result["failed"] else 0
+
+
+async def _catalog_stats(args) -> int:
+    from .infra.db import verify_db
+    from .application.catalog_stats import refresh
+
+    await verify_db()
+    result = await refresh(max_rows=args.max_rows)
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="treg-worker", description=__doc__)
     sub = ap.add_subparsers(dest="group", required=True)
@@ -270,6 +296,18 @@ def main(argv: list[str] | None = None) -> int:
     settle = tasksub.add_parser("settle", help="poll due tasks and complete their existing holds")
     settle.add_argument("--limit", type=int, default=50)
     settle.set_defaults(fn=_asynctasks_settle)
+    arena = sub.add_parser("arena", help="Enrich Arena database-backed statistics")
+    arenasub = arena.add_subparsers(dest="cmd", required=True)
+    insights = arenasub.add_parser("insights", help="fold new audit rows into the rolling Arena aggregate")
+    insights.add_argument("--max-seconds", type=float, default=110.0,
+                          help="stop after this long even with backlog left; the next run resumes")
+    insights.set_defaults(fn=_arena_insights)
+    catalog = sub.add_parser("catalog", help="catalog read models derived from the audit table")
+    catalogsub = catalog.add_subparsers(dest="cmd", required=True)
+    stats = catalogsub.add_parser("stats", help="fold new audit rows into per-endpoint, per-day reliability stats")
+    stats.add_argument("--max-rows", type=int, default=500_000,
+                       help="audit rows to consume in one run; the next run resumes from the cursor")
+    stats.set_defaults(fn=_catalog_stats)
     args = ap.parse_args(argv)
     _need_server()
     return asyncio.run(args.fn(args))

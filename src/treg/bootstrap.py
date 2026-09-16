@@ -20,7 +20,7 @@ from starlette.routing import BaseRoute, Mount
 
 from . import adsconv, analytics, archive, audit
 from .application.call import route as routed_call
-from .application import arena, arena_insights
+from .application import arena
 from . import bootstrap_handlers
 from .bootstrap_http import (
     _BodyDecodeMiddleware,
@@ -317,9 +317,13 @@ _DATAPLANE_ROUTE_KEYS: frozenset[RouteKey] = frozenset({
 })
 
 ROLE_BACKGROUND_TASKS: dict[AppRole, tuple[str, ...]] = {
-    "all": ("treg.adsconv.worker", "treg.application.arena_insights.worker"),
+    # Arena statistics moved out of the web processes: `treg-worker arena insights` (a cron)
+    # walks `callrecord` on its own schedule, so web processes no longer compete for the cursor
+    # row and a deploy no longer multiplies that scan. Only `/arena/insights` (a
+    # snapshot read) stays here.
+    "all": ("treg.adsconv.worker",),
     "dataplane": (),
-    "control": ("treg.adsconv.worker", "treg.application.arena_insights.worker"),
+    "control": ("treg.adsconv.worker",),
 }
 ROLE_STARTUP_CHECKS: dict[AppRole, tuple[str, ...]] = {
     "all": (
@@ -555,7 +559,6 @@ def _lifespan(role: AppRole):
                 if ROLE_BACKGROUND_TASKS[role] and archive.prune_enabled()
                 else None
             )
-            insights_task = asyncio.create_task(arena_insights.worker()) if role != "dataplane" else None
             endpoint_observations = app.state.endpoint_observation_reader
             routed_call.configure_endpoint_observation_reader(endpoint_observations)
             mcp_reader_bound = role != "control" and _mcp is not None
@@ -574,7 +577,7 @@ def _lifespan(role: AppRole):
             finally:
                 try:
                     workers = [task for task in (
-                        gauge_task, ads_task, archive_task, prune_task, insights_task,
+                        gauge_task, ads_task, archive_task, prune_task,
                     ) if task is not None]
                     for task in workers:
                         task.cancel()

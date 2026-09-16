@@ -474,7 +474,7 @@ Provider-specific calculation stays outside the faithful relay.
 
 | Evidence | Settlement behavior |
 |---|---|
-| Reported charge | DataForSEO `cost`, ScrapeCreators `credits_charged`, Akta `credits_consumed`, Lusha `billing.creditsCharged`, Exa `costDollars.total`; credit amounts use the catalog FX rate |
+| Reported charge | DataForSEO `cost`, ScrapeCreators and Dropleads finder/verifier `credits_charged`, Akta and Dropleads person enrichment `credits_consumed`, Dropleads company `credits.creditsDeducted`, Lusha `billing.creditsCharged`, Exa `costDollars.total`, and Prospeo bulk `total_cost`; credit amounts use the catalog FX rate |
 | Crustdata, cloro | Read the charge from a response HEADER (`_CREDIT_HEADERS`: Crustdata `X-Credits-Used`, cloro `X-Credits-Charged`) using the same FX rate. cloro omits the header on its free routes and on a failed extraction, neither of which it bills, so an absent header settles at the estimate, not at zero |
 | cloro reserve | `cost.value` is the full-surface `test_request` price (ChatGPT 9, Google SERP 7); the plain call settles lower from the header (verified live 2026-09-07 at the then-Lite rate: reserve 7,200 µ$, settled 5,600, refunded 1,600; at the Hobby rate 3,600 → 2,800, re-verified 2026-09-14). The top-level `state` body field is a `cost.modifiers` rider (+2 credits) reserved through the same generic path Aviato uses, which is open to any credit-priced provider with a FX rate |
 | Apollo | Known empty organization results are free |
@@ -924,3 +924,24 @@ label is released and retrying performs another free read. MIME type never decid
 ## HarvestAPI integration
 
 HarvestAPI reuses `cost.reported_charge` with path `cost` in USD. Billed misses retain their reported charge; wallet reads may lag and are never per-call evidence. Profile variants reserve their own scalar price. See [HarvestAPI](harvestapi.md).
+
+
+## Dropleads credit settlement
+
+Dropleads uses the frozen PAYG rate in `fx.yaml`. `_marketplace_pricing` sizes the hold from the
+requested bulk count or company-search limit. `_observed_cost_micro` then reads the provider's
+reported credit use from its three verified response shapes. A finite, nonnegative value, including
+zero, replaces the estimate. A known email-finder `not_found` response also settles at zero when the
+provider omits the numeric field. Missing or malformed evidence keeps the estimate. BYOK calls do
+not enter this money path. See [Dropleads](dropleads.md) for the endpoint limits and verified costs.
+
+
+## Prospeo credit settlement
+
+Prospeo uses the frozen Starter conversion in `fx.yaml`. `_marketplace_pricing` reserves one credit
+per bulk record and reads the optional nine-credit mobile rider from `cost.modifiers`; the shared
+credit-modifier path performs the arithmetic and a missing FX rate retains the ordinary estimate
+instead of raising. `_prospeo_cost_micro` settles bulk calls from finite nonnegative `total_cost`,
+single enrichments from endpoint-specific success evidence plus `free_enrichment`, searches from
+`free` and the result list, and suggestions at zero. Non-finite or malformed numeric evidence keeps
+the estimate for reconciliation. BYOK calls never enter this money path. See [Prospeo](prospeo.md).

@@ -39,7 +39,13 @@ def run_migrations_offline() -> None:
 
 
 def _run_migrations(connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    # Each revision commits on its own, so a lock timeout in one leaves every earlier revision
+    # applied and stamped; `maintenance` retries the upgrade and it resumes where it stopped.
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        transaction_per_migration=True,
+    )
 
     with context.begin_transaction():
         context.run_migrations()

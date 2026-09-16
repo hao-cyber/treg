@@ -23,6 +23,8 @@ sources:
   - src/treg/catalog/examples/financialdatasets.financials.search.screener.json
   - src/treg/catalog/examples/financialdatasets.financials.search.screener.filters.json
   - src/treg/catalog/examples/financialdatasets.insider-trades.json
+  - src/treg/catalog/examples/financialdatasets.index-funds.json
+  - src/treg/catalog/examples/financialdatasets.index-funds.tickers.json
   - src/treg/catalog/examples/financialdatasets.institutional-holdings.json
   - src/treg/catalog/examples/financialdatasets.institutional-holdings.investors.json
   - src/treg/catalog/examples/financialdatasets.institutional-holdings.tickers.json
@@ -59,6 +61,7 @@ sources:
   - src/treg/catalog/examples/millionverifier.people.email.verify.json
   - src/treg/catalog/examples/millionverifier.account.usage.json
   - src/treg/catalog/adapters.yaml
+  - src/treg/catalog/prospeo.yaml
   - tests/test_route_cost_ceiling.py
   - src/treg/catalog/tomba.yaml
   - src/treg/catalog/examples/tomba.people.email.verify.json
@@ -162,6 +165,8 @@ sources:
   - src/treg/domain/money/settlement.py
   - src/treg/domain/catalog/stats.py
   - src/treg/infra/catalog_observations.py
+  - src/treg/application/catalog_stats.py
+  - src/treg/alembic/versions/0038_endpoint_day_stats.py
   - src/treg/routers/catalog.py
   - tests/test_aigc_pr_b.py
   - tests/test_catalog_api.py
@@ -177,17 +182,18 @@ related:
 
 Sumble adds the full v9 surface with verified platform operations and explicit BYOK restrictions. See [Sumble](sumble.md) for schemas, pricing rules, routing and live evidence.
 
-## Financial Datasets v1 (2026-09-15)
+## Financial Datasets v1 and v2 (2026-09-15)
 
-`financialdatasets.yaml` adds 34 direct tools to the existing Market data / Stock Market Data
-catalog: 21 data operations and 13 dataset-specific discovery helpers. Company facts and the other
+`financialdatasets.yaml` adds 36 direct tools to the existing Market data / Stock Market Data
+catalog: 22 data operations and 14 dataset-specific discovery helpers. Company facts and the other
 standard data requests settle at $0.02 per successful platform call; KPI metrics, KPI guidance,
-non-GAAP data, and IPOs settle at $0.16. The 13 discovery helpers are free because their verified
+non-GAAP data, and IPOs settle at $0.16. The 14 discovery helpers are free because their verified
 public upstream routes use the generic anonymous platform fallback. BYOK calls retain the normal
 unmetered precedence and still win before that fallback.
 
 Company, fundamentals, filing, ownership, earnings, news, and equity-price inputs are described as
-US stock tickers. The free ticker, CIK, filing-type, investor, screener-filter, and bank helpers use
+US stock tickers; the Index Funds data tool instead accepts an ETF or index-fund ticker or a held
+US security ticker. The free ticker, CIK, filing-type, investor, screener-filter, and bank helpers use
 the existing `utility` kind because they enumerate valid inputs rather than return the primary
 financial result; the dashboard folds them into its management/utility accordion while they remain
 directly callable. treg does not call them as hidden preflights. Each one declares
@@ -195,10 +201,10 @@ directly callable. treg does not call them as hidden preflights. Each one declar
 there is no Financial Datasets branch in the relay. Each data input with a matching included helper
 names that exact utility tool ID in its agent-facing note, so dashboard and CLI users can discover
 valid values without assuming one dataset's coverage applies to another. Interest-rate data covers
-the provider's listed major central banks globally. The catalog does not claim forex, options,
-indices, or general multi-asset coverage.
+the provider's listed major central banks globally. The catalog does not claim forex, options, or
+general multi-asset coverage.
 
-Sixteen list endpoints accept the provider's opaque `cursor`. Their agent-facing input notes tell
+Seventeen list endpoints accept the provider's opaque `cursor`. Their agent-facing input notes tell
 callers to take it from the response `next_page_url` and omit the original filters on the next call,
 because the cursor preserves those filters. treg still relays the cursor and response unchanged.
 
@@ -207,9 +213,10 @@ Only `financialdatasets.prices.snapshot` joins a routed capability. Its adapter 
 `snapshot.price`, and preserves the provider object as `quote`. No new routed contract, category,
 provider-specific router, or response model is introduced. Captured fixtures and
 `tests/test_financialdatasets.py` verify the direct surface, fixed settlement, BYOK behavior, and
-the existing quote route. One live request for each of the 34 direct tools returned HTTP `200` on
-2026-09-15. A second pass captured the 18 response fixtures that were not already present, so every
-verified tool now has live response evidence. The responses exposed no usage, credit, charge,
+the existing quote route. One live request for each of the original 34 direct tools returned HTTP
+`200` on 2026-09-15. A second pass captured the 18 response fixtures that were not already present;
+the V2 checks described below supplied the two new fixtures, so every verified tool now has live
+response evidence. The responses exposed no usage, credit, charge,
 rate-limit, pagination-header, or request-ID evidence; paginated response bodies expose
 `next_page_url` when another page exists. The provider later settled one authenticated 34-tool pass
 at $1.24, including $0.26 for the 13 discovery requests. Three complete anonymous discovery passes
@@ -220,6 +227,19 @@ discovery surface free.
 That free result is conditional on the request having no caller-supplied provider credential. The
 anonymous virtual tool injects no key, but the faithful relay does not strip caller headers. A
 caller who sends `X-API-KEY` can therefore spend that key's Financial Datasets Credits.
+
+V2 adds `financialdatasets.index-funds` and its anonymous
+`financialdatasets.index-funds.tickers` discovery helper. The data tool supports both provider
+query directions: a fund ticker returns constituents and weights, while a held security ticker
+returns funds that hold it. `as_of` and `asset_class` apply only to the fund-ticker direction. The
+provider returns at most ten rows per page even when `limit` is larger; callers continue with the
+opaque cursor from `next_page_url`. Live checks returned 200 for the SPY fund direction, the AAPL
+holding direction, both pages of an eleven-row request, and the anonymous ticker helper. The
+authenticated Index Funds request settled at the existing standard $0.02 rate; anonymous ticker
+discovery did not use the provider account. Invalid requests with neither query direction or both
+`ticker` and `holding` returned HTTP 400, so per-success settlement releases their holds. All 36
+Financial Datasets documentation links were matched to the provider's current index and returned
+HTTP 200 after its move from `/api-reference/` to route-specific `/api/` pages.
 
 The computed cost view uses a `cost.table` fallback as its scalar validated upper bound for
 eligibility and compact displays. Runtime charging evaluates the first matching row against request
@@ -1556,8 +1576,8 @@ acceptable entry exists.
 
 Refresh is process-level singleflight. Concurrent misses join one shared Task, duplicate endpoint ids
 already in flight are not queued again, and the Task batches the requested ids. Its
-`PostgresEndpointObservationReader` opens an independent session only around `stats.observed()` and
-closes it as soon as the two queries finish. HTTP `/catalog/search`, both MCP catalog-search tools,
+`PostgresEndpointObservationReader` opens an independent session only around one small read and
+closes it as soon as that finishes. HTTP `/catalog/search`, both MCP catalog-search tools,
 routed planning in `application.call.route.build_plan`, and the prose pages that print observed stats
 (`/use-cases/*`, `/workflows` and `/workflows/*`) receive the same reader instance from bootstrap, so
 their request paths have no observation DB dependency, check out zero connections, and join the same
@@ -1566,6 +1586,37 @@ entries, backs off before retry, and never changes the Catalog response status; 
 cached entry is honest emptiness. The adapter exposes entry-level `fresh`, `stale`, and `miss`
 counters plus `refresh` and `refresh_failure` counts. Its invalidation story is the two TTLs: deploys
 and process restarts begin cold, and no cross-instance correctness depends on the cache.
+
+**The evidence is folded once, off the request path** (`application/catalog_stats.py`, run by the
+`treg-worker catalog stats` cron). Refreshing straight from `callrecord` meant every web process
+re-aggregating thirty days of audit rows for an endpoint and its siblings whenever its cache
+expired, and again from cold after each deploy: on a large audit table that is tens of seconds per
+pass, each pass evicting the pages the money path needs. The worker instead
+walks the audit table by primary key from a persisted cursor (`EndpointStatCursor`) and folds each
+row into one `EndpointDayStat` bucket per endpoint per UTC day: counts, the newest success, the
+`hit`/per-success tallies, and a uniform reservoir of at most `stats.LATENCY_SAMPLE` successful
+durations. Rows younger than sixty seconds wait for the next run so an audit insert that commits
+late is never skipped; a plain tool call (no `endpoint_id`) and a treg refusal (`refused_by`) are
+not evidence and are not folded, exactly as the live query excludes them. The first run bisects the
+primary key to the first row inside the window rather than reading older pages, consumes at most
+`--max-rows` per run, and the reader keeps computing the live aggregate until a run reports it
+has caught up (`caught_up_at`), so a deployment that never schedules the worker behaves as before.
+The same fallback applies when the worker stops: a cursor not updated for `STALE_AFTER_S` (two
+hours) sends the reader back to the live aggregate with a warning, so a dead cron degrades to the
+old cost rather than to buckets that silently age out of the window. Each batch is one
+transaction under the cursor row's lock and re-reads every bucket it touches inside that lock;
+nothing about a bucket is carried between batches, so two overlapping runs (a slow backfill
+still going when the next schedule fires) serialize cleanly instead of one erasing the other's
+fold with the cursor already past the rows.
+Once caught up, an observation is the sum of that endpoint's day buckets from the day of the
+window's start onward (`stats.window_days`, at most one day more evidence than the live cut,
+never less), published through the same `stats.publish` floors the live path uses; the fold and
+the SQL are held equal by `tests/test_catalog_stats_refresh.py`. Merging days weights each
+day's latency sample by the calls it stands for (`Tally.merge`, `Tally.percentile`): a reservoir
+is uniform within its day, so a busy day's four hundred samples must count for its thousands of
+calls, or the window's p95 would be the quiet days'. Buckets older than the window
+are pruned at the end of each caught-up run. `stats.Tally` is the one shape all three paths
+share: a day, a merged window, or the live aggregate.
 
 Five rules worth keeping:
 
@@ -2115,6 +2166,27 @@ The single verified adapter is usable by Arena; the two-provider public routing 
 ## HarvestAPI integration
 
 `harvestapi.yaml` adds API-key-only LinkedIn reads with opt-in `strict_query` contracts and three profile variants. See [HarvestAPI](harvestapi.md) for the verified surface, billed misses, pagination traps and adapters.
+
+
+## Dropleads integration
+
+`dropleads.yaml` adds twelve synchronous people and company tools. The balance check and export-cost
+route stay outside the public catalog. Seven verified adapters add email finding, phone finding,
+email verification, people search and enrichment, and company search and enrichment to the existing
+routed tools and Enrich Arena. The count and synchronous bulk tools stay direct. The provider uses
+the existing `CatalogTarget` allow-list for its second API host; catalog data cannot send a
+credential to another host. See [Dropleads](dropleads.md) for the surface, prices and live evidence.
+
+
+## Prospeo integration
+
+`prospeo.yaml` adds nine people and company tools on both own and platform keys. Six verified
+adapters add email finding, phone finding, person/company enrichment and person/company search to
+the routed tools and Enrich Arena; bulk enrichment and search suggestions stay direct-only. Search
+pages are fixed at 25 upstream, so adapters cannot forward the contract `limit`; they expose
+Prospeo's `pagination.total_count` while relaying the native result page. The account-information
+route remains internal for key verification and capacity. See [Prospeo](prospeo.md) for pricing,
+settlement, plan limits and live evidence.
 
 
 ### Verified additional routing categories

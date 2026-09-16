@@ -1354,6 +1354,39 @@ HARVESTAPI = OAuthProvider(
     probe_path="/users/my-api-user",  # Internal only; live bad key 401, valid key 200.
 )
 
+DROPLEADS = OAuthProvider(
+    service="dropleads", display_name="Dropleads", auth_kind="key",
+    token_label="API key", token_placeholder="your Dropleads API key",
+    token_header="X-API-Key", token_format="{secret}",
+    setup_url="https://app.dropleads.io/",
+    setup_action_label="Get your Dropleads API key",
+    setup_steps=("Sign in to Dropleads and open the API section.",
+                 "Create or copy an API key and paste it here."),
+    setup_note=("People and company searches, enrichment, email finding and verification, and "
+                "mobile finding share the account's credit balance. Connection verification is free."),
+    auth_uri="", token_uri="", scopes={}, client_id_setting="", client_secret_setting="",
+    category="Enrichment",
+    summary="Search and enrich people and companies, find work emails and mobiles, and verify emails.",
+    base_url="https://prime.dropleads.io",
+    docs_url="https://dropleads.readme.io/",
+    probe_path="/api/v2/prime-db/credits/balance",
+    catalog_targets=(
+        CatalogTarget(host="api.dropleads.io", base_url="https://api.dropleads.io"),
+    ),
+    extra_tools=(
+        {"suffix": "contact",
+         "base_url": "https://api.dropleads.io",
+         "examples": [
+             {"method": "POST", "path": "/email-finder",
+              "note": "Find a work email from first_name, last_name and company_domain or company_name."},
+             {"method": "POST", "path": "/mobile-finder",
+              "note": "Find a mobile number from linkedin_url."},
+             {"method": "POST", "path": "/email-verifier",
+              "note": "Verify one email address."},
+         ]},
+    ),
+)
+
 QUICKENRICH = OAuthProvider(
     service="quickenrich", display_name="QuickEnrich", auth_kind="key",
     token_label="API key", token_placeholder="your QuickEnrich API key",
@@ -1370,6 +1403,25 @@ QUICKENRICH = OAuthProvider(
     probe_path="/api/employees/contact-finder", probe_method="POST",
     probe_json={"company_url": {"include": ["treg-probe-nonexistent.invalid"], "exclude": []}, "per_page": 1},
     # Live 2026-09-08: bad key 401; valid free key 200, credits_used=0.
+)
+
+PROSPEO = OAuthProvider(
+    service="prospeo", display_name="Prospeo", auth_kind="key",
+    token_label="API key", token_placeholder="your Prospeo API key",
+    token_header="X-KEY", token_format="{secret}",
+    setup_url="https://app.prospeo.io/",
+    setup_action_label="Get your Prospeo API key",
+    setup_steps=("Sign in to Prospeo and open the API key settings.",
+                 "Create or copy an API key and paste it here."),
+    setup_note=("People and company search and enrichment share the account's monthly credits. "
+                "Connection verification reads account information for free."),
+    auth_uri="", token_uri="", scopes={}, client_id_setting="", client_secret_setting="",
+    category="Enrichment",
+    summary="Search and enrich people and companies, including verified work emails and mobiles.",
+    base_url="https://api.prospeo.io", docs_url="https://prospeo.io/api-docs",
+    # Live 2026-09-16: GET returned 200 for the platform key and 400 INVALID_API_KEY for garbage.
+    # The same free route is the capacity collector; Prospeo's data routes are POST, this one is GET.
+    probe_path="/account-information", probe_method="GET",
 )
 
 TRYKITT = OAuthProvider(
@@ -2992,7 +3044,7 @@ REGISTRY: dict[str, OAuthProvider] = {
         GOOGLE_ADS, YOUTUBE,
         LINKEDIN, SLACK, X, TIKTOK, FACEBOOK, INSTAGRAM, META_ADS,
         # API-key providers
-        APOLLO, PDL, AKTA, HUNTER, SUMBLE, FACECHECK, HARVESTAPI, QUICKENRICH, TRYKITT, CONTACTOUT, MILLIONVERIFIER, CRUNCHBASE, MINIMAX, OPENROUTER, REPLICATE,
+        APOLLO, PDL, AKTA, HUNTER, SUMBLE, FACECHECK, HARVESTAPI, DROPLEADS, QUICKENRICH, PROSPEO, TRYKITT, CONTACTOUT, MILLIONVERIFIER, CRUNCHBASE, MINIMAX, OPENROUTER, REPLICATE,
         REAPI, PIAPI,
         TIKHUB, BRIGHTDATA, SEMRUSH, JUSTONEAPI,
         SCRAPECREATORS,

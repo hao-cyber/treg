@@ -477,3 +477,24 @@ connection creation were tested live; see [ContactOut](contactout.md).
 ## HarvestAPI integration
 
 `HARVESTAPI` uses a pasted `X-API-Key` and internal `/users/my-api-user` probe. The wallet endpoint is not a catalog tool. See [HarvestAPI](harvestapi.md) for own-key priority and platform configuration.
+
+
+## Dropleads key connection
+
+`DROPLEADS` uses the standard pasted-key connection path and injects `X-API-Key`. The free
+`/api/v2/prime-db/credits/balance` probe rejects an invalid key and accepts a valid account with a
+zero balance. One connection provisions the primary `dropleads` tool and the `dropleads-contact`
+companion tool; both bind the same secret. `CatalogTarget` separately permits catalog calls to the
+companion host. `platform_key_dropleads` supplies the optional shared key, and the platform-provider
+allow-list remains required. An organization's own key has priority and is never metered by treg.
+See [Dropleads](dropleads.md) for the approved hosts and public tool surface.
+
+
+## Prospeo key connection
+
+`PROSPEO` uses the standard pasted-key connection path and injects the raw `X-KEY` header at
+`https://api.prospeo.io`. Its explicit `GET /account-information` probe accepts a valid Starter
+account and rejects a garbage key with `INVALID_API_KEY`; the account route remains internal rather
+than becoming a catalog tool. `platform_key_prospeo` supplies the optional shared key, gated by the
+platform-provider allow-list. An organization's own key keeps priority and is never metered by treg.
+See [Prospeo](prospeo.md) for the public surface and live verification evidence.

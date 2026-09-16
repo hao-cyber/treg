@@ -1,0 +1,1 @@
+{"success":true,"status":"success","total_requested_enrichments":1,"unique_enriched_records":1,"verified_records":1,"missing_records":0,"credits_consumed":0.2,"matches":[{"id":"example-person","first_name":"Jane","last_name":"Doe","name":"Jane Doe","email":"jane@example.com","organization_domain":"example.com"}]}

@@ -1,11 +1,19 @@
-"""Incremental, database-backed Arena analytics. No upstream calls or request-path scans."""
+"""Incremental, database-backed Arena analytics. No upstream calls or request-path scans.
+
+The collector is scheduled work, not web-process work: `treg-worker arena insights` runs
+`drain()` on a cron, one process at a time. It used to be a coroutine started by every control/all
+lifespan, which meant every web process (and every extra instance during a deploy) contending for
+the same `ArenaInsightState` row lock and each walking `callrecord` on the database the money path
+depends on. The web service keeps only `public_snapshot`, a primary-key read of the last published
+aggregate.
+"""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
 import statistics
+import time
 import zlib
 from datetime import timedelta
 from urllib.parse import parse_qs, urlsplit
@@ -15,7 +23,7 @@ from sqlalchemy.orm import aliased
 
 from ..domain import arena, arena_insights as rules
 from ..domain.catalog import store
-from ..infra.db import background_session_maker, session_maker
+from ..infra.db import session_maker
 from ..models import ArenaInsightState, ArenaObservation, ArchiveKey, ArchiveSnapshot, CallRecord
 from ..timeutil import utcnow_naive as now
 
@@ -174,8 +182,12 @@ async def _aggregate(db, version, until):
             "rows": sorted(grouped.values(), key=lambda r: (r["task"], r["input"], r["endpoint"]))}
 
 
-async def collect_batch(session_factory=background_session_maker):
-    """One bounded transaction; serialized cursor across control workers. Returns True on backlog."""
+async def collect_batch(session_factory=session_maker):
+    """One bounded transaction; the cursor row lock serializes overlapping runs. Returns True on backlog.
+
+    Runs inside the `treg-worker` process, whose only pool is the API one (nothing else shares it
+    there); it is never awaited by a request handler.
+    """
     cat, endpoints, version = _catalog()
     current = now()
     async with session_factory() as db:
@@ -221,8 +233,12 @@ async def collect_batch(session_factory=background_session_maker):
         if not backlog:
             state.payload = await _aggregate(db, version, until)
             state.updated_at = current
-            # Revisit recent evidence for delayed archive writes / concurrent audit commits.
+            # Revisit recent evidence for delayed archive writes / concurrent audit commits. Only
+            # the Arena's own endpoints are ever consumed, so the rewind asks about those rows and
+            # rides `ix_callrecord_endpoint_id_created_at`; `callrecord` has no bare `created_at`
+            # index, and the unconstrained form of this question is a walk of the whole table.
             rewind = (await db.execute(select(func.min(CallRecord.id)).where(
+                CallRecord.endpoint_id.in_(endpoints),
                 CallRecord.created_at >= until - timedelta(minutes=10)))).scalar_one()
             state.cursor = max(0, rewind - 1) if rewind else state.cursor
             state.scan_until = current - timedelta(seconds=60)
@@ -232,13 +248,22 @@ async def collect_batch(session_factory=background_session_maker):
     return backlog
 
 
-async def worker():
+async def drain(session_factory=session_maker, *, max_seconds: float = 110.0) -> dict:
+    """One scheduled pass: collect batches until the backlog is empty or the time budget is spent.
+
+    Sized for a two-minute cron: a pass that still has backlog at `max_seconds` stops and the next
+    run resumes from the persisted cursor. The `REFRESH_SECONDS` gate inside `collect_batch` makes
+    an early re-run a no-op, so overlapping schedules cannot double-collect. A failed batch is
+    logged and ends the pass; the last published aggregate stays in place.
+    """
+    started = time.monotonic()
+    batches = 0
     while True:
         try:
-            backlog = await collect_batch()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
+            backlog = await collect_batch(session_factory)
+        except Exception:  # noqa: BLE001 — a bad batch must not lose the last aggregate
             log.exception("Arena observation refresh failed; retaining the last database aggregate")
-            backlog = False
-        await asyncio.sleep(0.25 if backlog else REFRESH_SECONDS)
+            return {"batches": batches, "backlog": True, "failed": True}
+        batches += 1
+        if not backlog or time.monotonic() - started >= max_seconds:
+            return {"batches": batches, "backlog": backlog, "failed": False}

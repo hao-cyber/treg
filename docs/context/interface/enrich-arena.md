@@ -244,7 +244,14 @@ publishes, including a completed snapshot with no rows. A fresh database returns
 every two minutes while visible, preserves the last successful values after a refresh error, and
 shows the last update time. Prices still come from the catalog and team quote.
 
-`application.arena_insights.worker` runs on control/all roles and uses the background database pool.
+`application.arena_insights.drain` is the collector, run by the `treg-worker arena insights` cron
+(every two minutes; `--max-seconds` bounds a pass and the next run resumes from the cursor). It no
+longer runs inside the web processes: as a lifespan coroutine, every web process (and every extra
+instance during a deploy) contended for the cursor row and each walked `callrecord` on the
+database the money path depends on. In the worker process it uses the API pool, the only one open
+there. The rewind that
+revisits ten minutes of evidence is constrained to the Arena's endpoints so it rides
+`ix_callrecord_endpoint_id_created_at` instead of walking the table.
 It reads 100 audit records per transaction, follows their exact archive key/content and optional body
 carrier, reclassifies stored responses with current Arena required-field rules, and upserts anonymous
 `ArenaObservation` facts. It never calls vendors or trusts `CallRecord.hit`. No money writes or proxy
@@ -663,8 +670,8 @@ a separate amount line. Cost/Time column sizing keeps the annotation inside its 
 including nested result tables and the existing mobile card layout.
 
 Arena migrations are ordered after main’s 0026 (call reviews): 0027 (runs and evaluations), 0028 (rolling insights), and 0029
-(published verification aggregates). Public snapshot reads use the API pool; the incremental worker
-is listed explicitly in the background pool budget. Email verification adapters join the existing
+(published verification aggregates). Public snapshot reads use the API pool; the incremental
+collector runs in the `treg-worker` process and draws on no web-process pool. Email verification adapters join the existing
 task through catalog-driven discovery.
 
 Email-verification result rows use `emailVerdict` and `outcomeClass` to show “Verdict: Valid”

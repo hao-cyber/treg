@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from collections.abc import Awaitable, Callable
 from importlib.resources import files
 
 from alembic import command, util
 from alembic.config import Config
 from sqlalchemy import inspect
+from sqlalchemy.exc import DBAPIError
 
 from .application.connect import _backfill_provider_extra_tools
 from .infra.db import _db_url, _engine
@@ -22,6 +24,16 @@ ReleaseTask = tuple[str, Callable[[], Awaitable[int]]]
 RELEASE_TASKS: tuple[ReleaseTask, ...] = (
     ("provider companion tools", _backfill_provider_extra_tools),
 )
+
+# A hot-table ALTER queues behind live traffic for its ACCESS EXCLUSIVE lock, and every later
+# query on that table queues behind IT, so `alembic/env.py` caps each wait at 5 s. Waiting longer
+# on one attempt would lengthen that stall; retrying keeps every stall at 5 s while the deploy as a
+# whole waits long enough for the short transactions on the table to drain. env.py commits each
+# revision on its own, so a retry resumes at the revision that timed out.
+LOCK_RETRY_ATTEMPTS = 12
+LOCK_RETRY_PAUSE_SECONDS = 5.0
+
+logger = logging.getLogger("treg.maintenance")
 
 
 def _alembic_config() -> Config:
@@ -40,6 +52,33 @@ async def _table_names() -> set[str]:
         ))
 
 
+def _is_lock_timeout(exc: BaseException) -> bool:
+    """PostgreSQL cancelled a statement because `lock_timeout` elapsed (asyncpg's
+    `LockNotAvailableError`), wrapped however SQLAlchemy chose to wrap it."""
+    if not isinstance(exc, DBAPIError):
+        return False
+    origin = exc.orig
+    return "lock timeout" in str(origin or exc) or (
+        origin is not None and "LockNotAvailableError" in type(origin).__name__
+    )
+
+
+async def _upgrade_head_with_lock_retry(config: Config) -> None:
+    for attempt in range(1, LOCK_RETRY_ATTEMPTS + 1):
+        try:
+            await asyncio.to_thread(command.upgrade, config, "head")
+            return
+        except DBAPIError as exc:
+            if not _is_lock_timeout(exc) or attempt == LOCK_RETRY_ATTEMPTS:
+                raise
+            pause = random.uniform(LOCK_RETRY_PAUSE_SECONDS / 2, LOCK_RETRY_PAUSE_SECONDS)
+            logger.warning(
+                "migration lock timeout on attempt %d/%d; retrying in %.1f s",
+                attempt, LOCK_RETRY_ATTEMPTS, pause,
+            )
+            await asyncio.sleep(pause)
+
+
 async def _upgrade_schema() -> None:
     tables = await _table_names()
     config = _alembic_config()
@@ -47,7 +86,7 @@ async def _upgrade_schema() -> None:
     if not tables or "alembic_version" in tables:
         state = "empty" if not tables else "stamped"
         try:
-            await asyncio.to_thread(command.upgrade, config, "head")
+            await _upgrade_head_with_lock_retry(config)
         except util.CommandError as exc:
             if "Can't locate revision" not in str(exc):
                 raise
@@ -69,7 +108,6 @@ async def _upgrade_schema() -> None:
 async def upgrade() -> None:
     """Prepare the schema, then run every idempotent release task in order."""
     await _upgrade_schema()
-    logger = logging.getLogger("treg.maintenance")
     for name, task in RELEASE_TASKS:
         changed = await task()
         logger.info("upgrade task %s complete: %d row(s) created", name, changed)

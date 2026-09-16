@@ -30,6 +30,7 @@ sources:
   - src/treg/alembic/versions/0034_managed_api_keys.py
   - src/treg/alembic/versions/0035_default_key_generation.py
   - src/treg/alembic/versions/0036_activity_key_indexes.py
+  - src/treg/alembic/versions/0038_endpoint_day_stats.py
   - src/treg/maintenance.py
   - src/treg/web/sitetrack.js
   - src/treg/models.py
@@ -218,6 +219,16 @@ uses this metadata, never the encrypted token's shape.
   here queues every other query and the API pool empties into `503 treg_saturated` - see
   [deploy](../ops/deploy.md) § Database pools. The table has no retention sweep yet, so it only grows.
 
+  **Nothing on the request path aggregates it any more.** The two readers that did, the catalog's
+  observed reliability and the Arena's rolling insights, are scheduled `treg-worker` commands
+  that walk it incrementally by primary key. Revision 0038 adds their catalog half:
+  `EndpointDayStat` (one row per endpoint per UTC day: counts, newest success, hit tallies and a
+  bounded latency sample; primary key `(endpoint_id, day)`, indexed by `day` for the window prune)
+  and the single-row `EndpointStatCursor` (`cursor_id`, the `created_at` watermark and
+  `caught_up_at`, which is what lets the reader fall back to the live aggregate until the worker
+  has caught up). `application/catalog_stats.py` is the only writer of both; see
+  [catalog](catalog.md) § Choosing between providers.
+
   **`LedgerEntry` is the other one, and it was the larger.** It is append-only and never pruned
   (4.38M rows / 2.3 GB on prod 2026-09-06, ~400k rows a day), and `ledger.spent_today` - the
   fail-closed daily cap - reads it on EVERY metered call, inside the reserve transaction, on an
@@ -389,7 +400,9 @@ Migration scripts live under `src/treg/alembic/`, inside the shipped wheel. The 
 `alembic.ini` points there for developer CLI use, while `maintenance._alembic_config` resolves the
 installed package resource and supplies the configured database URL. Alembic commands run through
 `asyncio.to_thread` because the environment owns its own `asyncio.run`. On Postgres, `env.py` sets
-`lock_timeout = 5s` before migrations so lock contention fails the deploy cleanly.
+`lock_timeout = 5s` before migrations so lock contention fails an attempt cleanly, and commits each
+revision on its own so `maintenance`'s bounded retry resumes at the revision that timed out (see
+[deploy](../ops/deploy.md)).
 
 The authoritative drift guard upgrades to head, runs Alembic autogenerate against
 `SQLModel.metadata`, and requires an empty diff. Tests keep fast `create_all` fixtures through

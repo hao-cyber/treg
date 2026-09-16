@@ -455,3 +455,90 @@ def test_app_lifespan_does_not_run_release_backfills(tmp_path, ads_enabled):
 
     assert result.returncode == 0, result.stderr
     assert _companion_count(database) == 0
+
+
+# --- lock-timeout retry ---------------------------------------------------------------------
+# A hot-table ALTER waits at most 5 s for its lock (alembic/env.py) so that queued traffic stalls
+# for at most 5 s; the deploy waits longer by retrying, never by waiting longer on one attempt.
+
+
+class _LockNotAvailableError(Exception):
+    """asyncpg's class, by name, so the detection sees what production sees."""
+
+
+def _lock_timeout() -> Exception:
+    from sqlalchemy.exc import DBAPIError
+
+    return DBAPIError(
+        "ALTER TABLE callrecord ADD COLUMN api_key_id INTEGER", {},
+        _LockNotAvailableError("canceling statement due to lock timeout"),
+    )
+
+
+def _other_database_error() -> Exception:
+    from sqlalchemy.exc import DBAPIError
+
+    return DBAPIError("ALTER TABLE callrecord", {}, RuntimeError("relation does not exist"))
+
+
+def _fake_upgrade(monkeypatch, outcomes: list[Exception | None]) -> list[str]:
+    """`alembic upgrade head` that raises each queued outcome in turn, then succeeds."""
+    from treg import maintenance
+
+    calls: list[str] = []
+
+    def upgrade(config, revision):
+        calls.append(revision)
+        outcome = outcomes.pop(0) if outcomes else None
+        if outcome is not None:
+            raise outcome
+
+    async def stamped():
+        return {"alembic_version", "org"}
+
+    monkeypatch.setattr(maintenance.command, "upgrade", upgrade)
+    monkeypatch.setattr(maintenance, "_table_names", stamped)
+    monkeypatch.setattr(maintenance, "LOCK_RETRY_PAUSE_SECONDS", 0.0)
+    return calls
+
+
+async def test_upgrade_retries_a_lock_timeout_and_resumes(monkeypatch, caplog):
+    from treg import maintenance
+
+    calls = _fake_upgrade(monkeypatch, [_lock_timeout(), _lock_timeout()])
+
+    with caplog.at_level("WARNING", logger="treg.maintenance"):
+        await maintenance._upgrade_schema()
+
+    assert calls == ["head", "head", "head"]
+    retries = [r for r in caplog.records if "migration lock timeout" in r.getMessage()]
+    assert [r.getMessage()[:40] for r in retries] == [
+        "migration lock timeout on attempt 1/12; ", "migration lock timeout on attempt 2/12; ",
+    ]
+
+
+async def test_upgrade_gives_up_after_the_retry_budget(monkeypatch):
+    from sqlalchemy.exc import DBAPIError
+
+    from treg import maintenance
+
+    monkeypatch.setattr(maintenance, "LOCK_RETRY_ATTEMPTS", 3)
+    calls = _fake_upgrade(monkeypatch, [_lock_timeout()] * 5)
+
+    with pytest.raises(DBAPIError, match="lock timeout"):
+        await maintenance._upgrade_schema()
+
+    assert calls == ["head"] * 3
+
+
+async def test_upgrade_does_not_retry_other_database_errors(monkeypatch):
+    from sqlalchemy.exc import DBAPIError
+
+    from treg import maintenance
+
+    calls = _fake_upgrade(monkeypatch, [_other_database_error()])
+
+    with pytest.raises(DBAPIError, match="does not exist"):
+        await maintenance._upgrade_schema()
+
+    assert calls == ["head"]

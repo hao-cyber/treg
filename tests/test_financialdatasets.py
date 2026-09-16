@@ -1,4 +1,4 @@
-"""Financial Datasets v1: catalog surface, routing, metering and BYOK precedence."""
+"""Financial Datasets catalog surface, routing, metering and BYOK precedence."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ DATA = {
     "financialdatasets.news",
     "financialdatasets.insider-trades",
     "financialdatasets.institutional-holdings",
+    "financialdatasets.index-funds",
     "financialdatasets.financials.search.screener",
     "financialdatasets.macro.interest-rates",
     "financialdatasets.kpi.metrics",
@@ -55,6 +56,7 @@ DISCOVERY = {
     "financialdatasets.macro.interest-rates.banks",
     "financialdatasets.institutional-holdings.tickers",
     "financialdatasets.institutional-holdings.investors",
+    "financialdatasets.index-funds.tickers",
 }
 
 STANDARD = DATA - {
@@ -83,6 +85,7 @@ PAGINATED = {
     "financialdatasets.news",
     "financialdatasets.insider-trades",
     "financialdatasets.institutional-holdings",
+    "financialdatasets.index-funds",
     "financialdatasets.kpi.metrics",
     "financialdatasets.kpi.guidance",
     "financialdatasets.kpi.non-gaap",
@@ -99,11 +102,11 @@ def financialdatasets_on(monkeypatch):
     get_settings.cache_clear()
 
 
-def test_v1_catalog_is_the_locked_34_tool_surface():
+def test_catalog_is_the_locked_36_tool_surface():
     cat = catalog_store.load()
     endpoints = cat.for_provider("financialdatasets")
     assert {ep["id"] for ep in endpoints} == DATA | DISCOVERY
-    assert len(endpoints) == 34
+    assert len(endpoints) == 36
     assert all(ep["domain"] == "stocks" and ep["platform"] == "stocks" for ep in endpoints)
     assert all(ep["scope"] == "any_account" and not ep["status"] for ep in endpoints)
 
@@ -171,7 +174,12 @@ def test_coverage_copy_is_scoped_and_discovery_is_supporting_utility():
     for ep in cat.for_provider("financialdatasets"):
         ticker = (ep["input"].get("queryParams") or {}).get("ticker")
         if ticker:
-            assert "US stock ticker" in ticker.get("note", ""), ep["id"]
+            expected = (
+                "ETF or index-fund ticker"
+                if ep["id"] == "financialdatasets.index-funds"
+                else "US stock ticker"
+            )
+            assert expected in ticker.get("note", ""), ep["id"]
     assert "central bank" in cat.by_id["financialdatasets.macro.interest-rates"]["summary"]
 
 
@@ -198,6 +206,9 @@ def test_data_inputs_name_their_matching_discovery_utilities():
         "financialdatasets.institutional-holdings": (
             "financialdatasets.institutional-holdings.tickers",
             "financialdatasets.institutional-holdings.investors",
+        ),
+        "financialdatasets.index-funds": (
+            "financialdatasets.index-funds.tickers",
         ),
         "financialdatasets.financials.search.screener": (
             "financialdatasets.financials.search.screener.filters",

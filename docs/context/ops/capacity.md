@@ -98,6 +98,41 @@ support. Per-call billing remains separate: use `meta.credits_used` at the treg 
 Exhaustion behavior is acknowledged as unrecorded in the existing shared signature guard;
 we did not exhaust the trial to manufacture evidence. No overflow route is claimed.
 
+
+## Dropleads credits
+
+`collectors._dropleads` uses the free internal balance route and reads
+`credits.totalAvailable`. Zero is a valid exhausted balance. A missing, negative, Boolean or
+non-numeric value is unknown. Subscription, PAYG and `usePayg` values stay in the observation note;
+they do not replace the spendable total. The default policy is `credits / manual / api`.
+`scripts/provider_balances.py` needs no provider branch because the typed platform-key setting and
+the shared collector table discover Dropleads automatically. The free trial was not exhausted, so
+the actual upstream exhaustion response is acknowledged as unrecorded and no overflow route is
+enabled. See [Dropleads](../architecture/dropleads.md).
+
+## Prospeo subscriptions
+
+`collectors._prospeo` uses the free `GET /account-information` route and reads
+`response.remaining_credits`. Zero is a valid exhausted allowance; a missing, negative, Boolean,
+non-finite or non-numeric value is unknown. The observation note carries the current plan, used
+credits and `next_quota_renewal_date`. Default policy is
+`monthly_quota / quota_reset / api`; no auto-funding behavior is inferred.
+
+The shared Starter key has two endpoint families: enrichment permits 5 requests/second while
+search permits 1 request/second. `_RATE_LIMITS` therefore defaults Prospeo to the conservative
+provider-wide 1/second rate until smoothing becomes endpoint-aware. This protects routed search
+calls from avoidable 429s at the cost of intentionally slowing platform enrichment; BYOK does not
+use the shared-key limiter.
+
+`scripts/provider_balances.py` requires no Prospeo branch. The typed
+`platform_key_prospeo` setting makes `all_platform_providers()` discover it, and `BALANCE_ROUTES`
+selects the shared collector. The collector reads its key setting independently of the serving
+allow-list so disabling a provider does not hide its last balance check. A focused live
+reconciliation matched one paid one-credit call beside two free calls without exposing the key.
+The Starter allowance was not exhausted, so its provider-specific exhaustion response remains in
+the acknowledged-unrecorded set and no overflow route is claimed. See
+[Prospeo](../architecture/prospeo.md).
+
 ## Pieces (`src/treg/domain/capacity/`)
 
 - **`collectors.py`** — the providers' *free* balance/quota calls (`coroutine(client, key) →

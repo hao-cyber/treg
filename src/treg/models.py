@@ -1637,3 +1637,45 @@ class ArenaVerificationSnapshot(SQLModel, table=True):
     source_digest: str
     published_at: datetime = Field(index=True)
     payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class EndpointDayStat(SQLModel, table=True):
+    """One catalog endpoint's observed reliability for one UTC day — the read model behind
+    `domain/catalog/stats`. Folded from `callrecord` by `application.catalog_stats.refresh` (the
+    `treg-worker catalog stats` cron), which is this table's only writer; the catalog reads thirty
+    of these rows per endpoint instead of aggregating a month of audit rows on every refresh,
+    which competed with the money path for the database's cache.
+
+    Every column is a count, a timestamp or a bounded sample of durations: nothing here can
+    identify a caller, and the floors in `stats.publish` still apply when the rows are read back.
+    """
+
+    __table_args__ = (Index("ix_endpointdaystat_day", "day"),)  # the window prune
+
+    endpoint_id: str = Field(primary_key=True)
+    day: str = Field(primary_key=True)  # YYYY-MM-DD, UTC, from CallRecord.created_at
+    n: int = Field(default=0)              # rows the provider actually saw (refused_by IS NULL)
+    ok: int = Field(default=0)             # 2xx
+    bad: int = Field(default=0)            # 5xx, plus 405 (a stale catalog contract, see stats)
+    last_ok_at: datetime | None = Field(default=None)
+    hits: int = Field(default=0)
+    hit_decided: int = Field(default=0)
+    paid_hits: int = Field(default=0)      # per_success fallback rows, see stats.observed
+    free_misses: int = Field(default=0)
+    latency_seen: int = Field(default=0)   # successful rows with a duration, for the reservoir
+    latency_sample: list = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class EndpointStatCursor(SQLModel, table=True):
+    """Where `application.catalog_stats.refresh` has got to in `callrecord`, and whether it has
+    caught up. One row (`id = "callrecord"`). `caught_up_at` is NULL until a run drains the backlog,
+    and the catalog keeps computing observations live until then, so a fresh install or a
+    deployment that has not scheduled the worker yet behaves exactly as before.
+    """
+
+    id: str = Field(primary_key=True)
+    cursor_id: int = Field(default=0)             # last consumed CallRecord.id
+    watermark: datetime | None = Field(default=None)  # created_at of the last consumed row
+    caught_up_at: datetime | None = Field(default=None)
+    updated_at: datetime = Field(default_factory=_now)

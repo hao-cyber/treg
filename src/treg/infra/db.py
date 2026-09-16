@@ -56,7 +56,6 @@ BACKGROUND_CONSUMERS: dict[str, int] = {
     "archive.prune_worker": 1,    # holds one across a whole sweep
     "archive.refresh_worker": 1,
     "catalog observation refresh": 1,   # singleflight, one task per process
-    "arena_insights.worker": 1,   # bounded incremental aggregation; public snapshot reads use API
     "admin evidence sweep": 1,    # single-flighted in routers/admin.py
     "api_keys last used": 1,      # throttled best-effort managed-key display metadata
 }
