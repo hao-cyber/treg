@@ -120,11 +120,17 @@ Normal tests use synthetic responses to cover zero-balance connection acceptance
 injection, byte-preserving multipart upload, submission and repeated status polling, query-based
 image removal, platform refusal, cache policy and absence of treg money entries.
 
-Search, delete and account-info carry `verified: '2026-09-15'` with scrubbed example responses
-(thumbnails truncated; result URLs, search/image IDs and hashes replaced with placeholders — the
-examples show the response shape, not real matches from a biometric search); upload carries its
-example without a stamp, because a verified endpoint
-must keep a re-runnable `test_request` and the stock verifier cannot build multipart file parts.
-The catalog verifier can re-check account info with `--id facecheck.account.usage`; the
-upload/search/delete examples came from manual `--upload` calls. Re-verification needs an
-authorized test image and fresh IDs from that upload, not the placeholders in `test_request`.
+Only account-info carries `verified: '2026-09-15'` and a replayable `test_request`. Upload, search
+and delete retain their manual verification evidence above and scrubbed examples, but no automated
+verification stamp or runnable test request. The examples show response shape, not real matches:
+thumbnails are truncated and result URLs, search/image IDs and hashes are placeholders.
+
+`catalog_verify.py facecheck` prints explicit SKIP lines for those three operations and checks only
+account info. Manual re-verification needs an authorized image and fresh IDs. Use a separate,
+not-yet-submitted upload for deletion; never automatically replay a paid search or a placeholder ID.
+
+Catalog upload commands derive `--upload images=@/path/to/file` from the binary input schema;
+replace the file path before use. The shared template builder preserves required text fields as
+multipart fields instead of generating JSON. Tests pass the generated command through the real CLI
+parser and request encoder, then check its multipart file bytes. Search templates require your own
+search ID; the explicit demo/submission/polling sequence above remains the safe protocol walkthrough.

@@ -2,12 +2,79 @@
 
 import json
 import os
+import shlex
+from email.parser import BytesParser
+from email.policy import default
 
 import httpx
 import pytest
 
 from treg.api import app
 from treg.domain.catalog import store as catalog_store
+
+
+@pytest.mark.parametrize("missing_file", [False, True])
+def test_catalog_upload_template_builds_real_multipart(tmp_path, monkeypatch, missing_file):
+    from treg import cli
+
+    ep = catalog_store.load().by_id["facecheck.web.face.upload"]
+    argv = shlex.split(catalog_store.call_template(ep))
+    photo = tmp_path / "photo with spaces.jpg"
+    if not missing_file:
+        photo.write_bytes(b"synthetic-image-bytes\x00\xff")
+    argv = [arg.replace("@/path/to/file", f"@{photo}") for arg in argv]
+    seen = []
+
+    def handle(request):
+        seen.append(request)
+        return httpx.Response(200, json={"id_search": "new-search", "error": None})
+
+    monkeypatch.setattr(cli, "_client", lambda cfg: httpx.Client(
+        transport=httpx.MockTransport(handle), base_url="https://registry.example.test"))
+    args = cli.build_parser().parse_args(argv[1:])
+    if missing_file:
+        with pytest.raises(SystemExit, match="--upload file not found"):
+            args.fn(args, {})
+        assert not seen
+        return
+    args.fn(args, {})
+    assert len(seen) == 1
+    request = seen[0]
+    assert request.method == "POST"
+    assert request.url.path == "/call/facecheck.web.face.upload"
+    mime = BytesParser(policy=default).parsebytes(
+        f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode() + request.content)
+    assert mime.get_content_type() == "multipart/form-data"
+    parts = list(mime.iter_parts())
+    assert len(parts) == 1
+    assert parts[0].get_param("name", header="content-disposition") == "images"
+    assert parts[0].get_filename() == photo.name
+    assert parts[0].get_payload(decode=True) == photo.read_bytes()
+
+
+def test_facecheck_reverification_skips_calls_requiring_fresh_inputs(monkeypatch, capsys):
+    from scripts import catalog_verify
+
+    monkeypatch.setenv("TREG_CATALOG_CRED", "synthetic-token")
+    monkeypatch.setattr("sys.argv", ["catalog_verify.py", "facecheck"])
+    seen = []
+
+    def handle(request):
+        seen.append(request)
+        assert request.url.path == "/api/info"
+        return httpx.Response(200, json={"remaining_credits": 0, "has_credits_to_search": False,
+                                       "is_online": False})
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(catalog_verify.httpx, "Client", lambda **kwargs: client)
+    assert catalog_verify.main() == 0
+    assert len(seen) == 1
+    output = capsys.readouterr().out
+    for name in ("web.face.upload", "web.face.search", "web.face.image.delete"):
+        endpoint = f"facecheck.{name}"
+        assert f"SKIP {endpoint}" in output
+        assert not catalog_store.load().by_id[endpoint].get("verified")
+    assert "PASS facecheck.account.usage" in output
 
 
 async def test_connect_rejects_http_200_error_and_accepts_zero_balance(clients, monkeypatch):

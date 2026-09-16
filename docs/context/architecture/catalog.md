@@ -166,6 +166,7 @@ sources:
   - tests/test_aigc_pr_b.py
   - tests/test_catalog_api.py
   - tests/test_catalog_validate.py
+  - scripts/catalog_verify.py
 related:
   - architecture/money.md
   - architecture/proxy-model.md
@@ -614,6 +615,19 @@ endpoints:
     example_response: examples/tikhub.tiktok.user.profile.json   # written by catalog_verify.py
     docs_url: https://docs.tikhub.io/…
 ```
+
+### File upload templates and verification prerequisites
+
+`call_template` recognizes `format: binary` on body fields (including array items) and emits CLI
+`--upload` arguments for multipart files and accompanying required fields. File paths remain
+`@/path/to/file` placeholders for the caller to replace; they are never JSON body values. This is
+shared catalog presentation behavior, not a provider-specific relay rewrite.
+
+An operation that needs a fresh upload, task ID or destructive setup must not use a placeholder
+`test_request` to qualify for `verified`. Keep manual evidence in the provider's context fragment
+and scrubbed examples; omit the automated stamp until a replayable request exists.
+`catalog_verify.py` prints SKIP for absent/empty test requests, including in single-endpoint runs.
+FaceCheck's upload/search/delete follow this rule; its account-info probe remains replayable.
 
 ### Async descriptors
 

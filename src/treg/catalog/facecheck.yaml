@@ -69,14 +69,11 @@ endpoints:
         demo: {type: boolean, required: false, note: "true searches only the first 100,000 faces without deducting credits; use for protocol testing, not coverage evaluation. Send false for a full paid search."}
         shady_only: {type: boolean, required: false, note: "Present in OpenAPI; semantics are not described. Omit unless confirmed with FaceCheck."}
       note: "POST repeatedly with status_only=true until output is present or error is non-empty. Match scores do not establish identity. Live 2026-09-15: items[].url is a string in both demo and paid responses, despite OpenAPI declaring an object with value; treg relays it unchanged. A full search of ~1.47B faces took ~6s compute plus queue time."
-    # Replace the placeholder with an ID from an authorized upload; never submit a full search
-    # automatically. This test is status-only and demo-only, not a valid success fixture.
-    test_request:
-      body: {id_search: REPLACE_WITH_OWN_SEARCH_ID, with_progress: true, status_only: true, demo: true}
+    # Manually verified; automated replay requires a fresh authorized upload and search.
+    # Keep those prerequisites out of test_request rather than sending placeholder IDs.
     expect: {json_path: error, equals: null}
     cost: *unknown
     docs_url: https://facecheck.id/en/Face-Search/API
-    verified: '2026-09-15'
     example_response: examples/facecheck.web.face.search.json
 
   - id: facecheck.web.face.image.delete
@@ -96,12 +93,10 @@ endpoints:
         id_search: {type: string, required: true}
         id_pic: {type: string, required: true}
       note: "Use IDs returned by your own upload. Removes an input image from that search request; this is not an Internet index removal request. Live 2026-09-15: works only before the search is submitted; deleting from a completed search answers HTTP 200 with error 'Not able to delete image' (PIC_NOT_FOUND)."
-    test_request:
-      queryParams: {id_search: REPLACE_WITH_OWN_SEARCH_ID, id_pic: REPLACE_WITH_OWN_IMAGE_ID}
+    # Manually verified with an image from a fresh, not-yet-submitted upload.
     expect: {json_path: error, equals: null}
     cost: *unknown
     docs_url: https://facecheck.id/Swagger/index.html
-    verified: '2026-09-15'
     example_response: examples/facecheck.web.face.image.delete.json
 
   - id: facecheck.account.usage
