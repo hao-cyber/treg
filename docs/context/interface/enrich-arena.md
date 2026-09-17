@@ -181,6 +181,18 @@ Tasks are work email, person enrichment, company enrichment, phone lookup, email
 email-to-LinkedIn, people search, people at a company, and similar companies. The catalog's existing contracts and adapters define supported inputs and
 normalized result fields. Name-based comparisons require both first and last name, validated
 before quote creation or upstream dispatch; use a LinkedIn URL when that input is unavailable.
+
+BounceBan joins email verification only through its verified standard-single adapter. The adapter
+maps `result=deliverable` to valid, preserves other provider verdicts as status, and treats a missing
+result such as a pending `verifying` body as a routing miss. Public estimates use the fixed $0.004
+upstream cost before the configured platform margin. Waterfall and bulk BounceBan tools remain BYOK
+only and do not enter Arena.
+
+ZeroBounce also joins email verification through its verified single-validation adapter. It maps
+only `status=valid` to true, preserves the provider's other verdicts as negative answers, and treats
+unknown as a miss. Public estimates use the fixed $0.0138 upstream replacement cost before the
+configured platform margin. Account reads and the excluded batch/file surface do not enter Arena.
+
 Email inputs require a nonempty mailbox and dotted domain. Malformed domain/LinkedIn URLs,
 invalid ports, embedded credentials and non-web schemes return validation errors before pricing
 or charging, including malformed bracketed hosts that URL parsing would otherwise reject with an exception.

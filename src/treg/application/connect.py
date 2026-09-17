@@ -1,7 +1,6 @@
 """Credential connection workflows and transaction boundaries."""
 
 import asyncio
-import base64
 from dataclasses import dataclass
 from datetime import timedelta
 import json
@@ -21,6 +20,7 @@ from ..domain.connections.oauth_flow import consent_url
 from ..infra.db import session_maker
 from ..infra.oauth_exchange import HTTPXOAuthExchangePort
 from ..infra.oauth_refresh import HTTPXOAuthRefreshPort
+from ..infra.upstream.injectors import ensure_base64
 from ..models import PendingOAuth, Secret, Tool
 from ..timeutil import as_naive as _as_naive
 from ..timeutil import utcnow_naive as _utcnow_naive
@@ -54,17 +54,25 @@ def _provider_bindings(provider, secret: Secret) -> list[dict]:
     secret_field="access_token" would try to read a JSON field that isn't there. A key may ride in
     a header (default) or a query param (Semrush's ?key=…). A provider needing a second credential
     that TREG holds (Google Ads' developer token) gets it as a platform binding — read from settings
-    at call time, never copied into the org's secrets."""
+    at call time, never copied into the org's secrets.
+
+    When a provider uses `token_encode="base64"` (HTTP Basic: DataForSEO, Moz, PredictLeads), the
+    marketplace connect flow Base64-encodes at paste time (connect.test_api_credential). But a secret
+    added via `treg secret add <provider>` bypasses that and stores raw `login:password`. The binding
+    carries `token_encode` so the injector can detect and encode a raw value at call time, making both
+    add paths produce the same Authorization header."""
     if provider.uses_pasted_secret:
         if provider.token_location == "query":
             bindings = [{
                 "secret_id": secret.id, "injector": "env", "location": "query",
                 "name": provider.token_param, "format": provider.token_format,
+                **({"token_encode": provider.token_encode} if provider.token_encode else {}),
             }]
         else:
             bindings = [{
                 "secret_id": secret.id, "injector": "env", "location": "header",
                 "name": provider.token_header, "format": provider.token_format,
+                **({"token_encode": provider.token_encode} if provider.token_encode else {}),
             }]
     else:
         bindings = [{
@@ -538,15 +546,10 @@ async def connect_with_pasted_secret(
     # Base64 of a printable `login:password`, keep it. A raw pair can never be mistaken for one (":"
     # is not in the Base64 alphabet, so strict decoding refuses it), and a Base64 blob can never be
     # a working raw pair (it has no ":"), so the branch is unambiguous either way.
+    # The injector applies the same rule at call time (`treg secret add` stores the raw pair), so
+    # both add paths share one detector.
     if provider.token_encode == "base64":
-        already = None
-        try:
-            decoded = base64.b64decode(token, validate=True).decode()
-            if ":" in decoded and decoded.isprintable():
-                already = token
-        except Exception:  # noqa: BLE001 — not Base64, or not text: encode it below
-            pass
-        token = already or base64.b64encode(token.encode()).decode()
+        token = ensure_base64(token)
 
     # The credential rides in a header (default) or a query param (Semrush: ?key=…). The cheapest
     # check may also live on a different host than base_url, so honor an absolute probe_url override,

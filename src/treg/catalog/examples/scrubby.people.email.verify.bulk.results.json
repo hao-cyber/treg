@@ -1,0 +1,1 @@
+{"status":"completed","identifier":"batch_sanitized_a1b2c3d4","retry_after_seconds":0,"results":{"verified@example.com":{"result":"Valid","status":"OK","quick_status":"OK"}}}

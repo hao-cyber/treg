@@ -44,6 +44,8 @@ proposed_capabilities:
   account.logs: "Recent API calls with the credits each one cost"
 endpoints:
   - id: tomba.people.email.find
+    cache:
+      ignore_paths: ["data.verification.date", "data.sources[*].extracted_on", "data.sources[*].last_seen_on"]
     domain: people
     capability: people.email.find
     platform: people
@@ -77,6 +79,8 @@ endpoints:
     docs_url: https://docs.tomba.io/api/finder
 
   - id: tomba.people.email.find.linkedin
+    cache:
+      ignore_paths: ["data.verification.date", "data.sources[*].extracted_on", "data.sources[*].last_seen_on"]
     domain: people
     capability: people.email.find
     platform: people

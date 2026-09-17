@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from .. import crypto, email as email_sender, health, localrun
+from .. import analytics, crypto, email as email_sender, health, localrun
 from .. import providers as _providers
 from ..application.onboard import demo as demo_seed
 from ..application import signup as signup_use_cases
@@ -274,6 +274,11 @@ async def _usage_rollup(db: AsyncSession, org_id: int, since: datetime) -> dict:
     # rather than from the audit rows, which are fire-and-forget and may be incomplete. One aggregate.
     spend = await ledger.spend_since(db, org_id, since)
     return {"totals": totals, "by_user": by_user, "by_tool": by_tool, "by_day": by_day, "spend": spend}
+
+
+class OrgPatchIn(BaseModel):
+    name: str | None = None
+    slug: str | None = None
 
 
 class OrgSettingsIn(BaseModel):
@@ -913,8 +918,11 @@ def _agent_email(org: Org, name: str) -> str:
 def _agent_name(org: Org, email: str) -> str:
     """The friendly name back out of the address (the name isn't stored — the address IS the id)."""
     local = email.split("@", 1)[0]
-    prefix = f"agent-{org.slug}-"
-    return local[len(prefix):] if local.startswith(prefix) else local
+    for slug in (org.slug, org.previous_slug):  # agents minted before a rename carry the old slug
+        prefix = f"agent-{slug}-"
+        if slug and local.startswith(prefix):
+            return local[len(prefix):]
+    return local
 
 
 app = APIRouter()
@@ -1298,6 +1306,34 @@ async def usage_by_tag(
     }
 
 
+@app.patch("/orgs/{org_id}")
+async def rename_org(
+    org_id: int, body: OrgPatchIn,
+    caller: Caller = Depends(require_member), db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change the team's display name and/or slug. Admin+.
+
+    The old slug is kept as an alias (`Org.previous_slug`): copied keys, `~/.treg` and MCP pins
+    that name it keep working. Stripe metadata and the analytics group key are not rewritten.
+    """
+    _require_admin_of(org_id, caller)
+    if body.name is None and body.slug is None:
+        raise HTTPException(status_code=422, detail="send name and/or slug")
+    org = caller.org
+    old_slug = org.slug
+    try:
+        await teams.rename_org(db, org, name=body.name, slug=body.slug)
+        await db.commit()
+    except ValueError as e:
+        raise HTTPException(status_code=409 if "taken" in str(e) else 400, detail=str(e))
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="slug is taken")
+    analytics.capture(caller.email, "org_renamed", {
+        "org_id": org.id, "slug_changed": org.slug != old_slug})
+    return {"org_id": org.id, "org": org.slug, "previous_slug": org.previous_slug, "name": org.name}
+
+
 @app.get("/orgs/{org_id}/settings")
 async def get_org_settings(
     org_id: int, caller: Caller = Depends(require_member), db: AsyncSession = Depends(get_session),
@@ -1307,9 +1343,9 @@ async def get_org_settings(
     if caller.org_id != org_id:
         raise HTTPException(status_code=403, detail="not your org")
     org = caller.org
-    return {"daily_cap_micro": _effective_daily_cap(org),
+    return {"daily_cap_micro": _effective_daily_cap(org),  # 0 = no limit
             "daily_cap_set_by_team": int(org.daily_cap_micro or 0) or None,
-            "platform_ceiling_micro": get_settings().platform_daily_cap_micro,
+            "platform_default_micro": get_settings().platform_daily_cap_micro,  # 0 = none
             "platform_overflow": not org.platform_overflow_disabled,
             "budget_dims": _budget_dims_of(org), "primary_dim": _primary_dim_of(caller)}
 
@@ -1319,26 +1355,18 @@ async def set_org_settings(
     org_id: int, body: OrgSettingsIn,
     caller: Caller = Depends(require_member), db: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Set the team's own spend ceiling and which tag keys carry budgets. Admin+.
+    """Set the team's own daily spend limit and which tag keys carry budgets. Admin+.
 
-    A team may LOWER its ceiling freely; raising it past the platform ceiling is refused rather than
-    silently clamped, because a builder who thinks they set $500/day and actually got $5 discovers it
-    as an outage in the middle of their launch.
+    The limit is the team's own rail, so it moves in either direction: any positive figure, or 0 to
+    follow the deployment default (no limit, by default). Nothing is clamped silently — the value
+    stored is the value sent.
     """
     _require_admin_of(org_id, caller)
     org = caller.org
     sent = body.model_fields_set
     if "daily_cap_micro" in sent and body.daily_cap_micro is not None:
-        ceiling = get_settings().platform_daily_cap_micro
         if body.daily_cap_micro < 0:
             raise HTTPException(status_code=422, detail="daily_cap_micro must be 0 or more")
-        if body.daily_cap_micro > ceiling:
-            raise HTTPException(status_code=403, detail={
-                "error": "above_platform_ceiling", "requested_micro": body.daily_cap_micro,
-                "ceiling_micro": ceiling,
-                "message": (f"${ledger.usd(ceiling):g}/day is the ceiling we allow for a team. Ask us "
-                            f"to raise it — reselling volume is a conversation, not a setting."),
-            })
         org.daily_cap_micro = body.daily_cap_micro
     if "platform_overflow" in sent and body.platform_overflow is not None:
         org.platform_overflow_disabled = not body.platform_overflow

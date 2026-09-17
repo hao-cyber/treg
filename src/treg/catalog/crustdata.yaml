@@ -136,6 +136,8 @@ endpoints:
     docs_url: https://docs.crustdata.com/company-docs/enrichment/introduction
 
   - id: crustdata.people.search
+    cache:
+      ignore_paths: ["next_cursor", "profiles[*].metadata.updated_at"]
     domain: contacts
     capability: people.search
     platform: people

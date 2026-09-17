@@ -6,6 +6,8 @@ platform service tiers satisfy an endpoint.
 
 from __future__ import annotations
 
+import json
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ... import oauth_providers
@@ -18,6 +20,7 @@ from .resolve import (
     _authorization_method,
     _anonymous_offer,
     _enforce_catalog_status,
+    _marketplace_pricing,
     _marketplace_secret,
     _platform_estimate_micro,
     _platform_offer,
@@ -120,7 +123,7 @@ async def catalog_endpoint_access(
     if cost is not None:
         # The number is the honest per-call price at the DEFAULT page size — a `per_result`
         # endpoint costs more or less depending on how many rows the caller asks for, so it is "~".
-        estimate = _platform_estimate_micro(cost, {})
+        estimate = _platform_access_estimate(endpoint, service, cost)
         low = cost.get("usd_min")  # a price table: the figure depends on model/resolution/duration
         if isinstance(low, (int, float)) and low < ledger.usd(estimate):
             price = (f"${low:g}-${ledger.usd(estimate):g} by model, resolution and duration (the "
@@ -139,6 +142,20 @@ async def catalog_endpoint_access(
             **({"estimated_cost_usd_min": low} if isinstance(low, (int, float)) else {}),
         }
     return _missing_access(endpoint, registry_provider, provider, methods, service)
+
+
+def _platform_access_estimate(endpoint: dict, service: str, cost: dict) -> int:
+    """Estimate the catalog's runnable example, including provider-specific request pricing."""
+    if service != "openmart":
+        return _platform_estimate_micro(cost, {})
+    test_request = endpoint.get("test_request") or {}
+    body_value = test_request.get("body")
+    body = json.dumps(body_value).encode() if body_value is not None else b""
+    query = dict(test_request.get("query") or {})
+    estimate, _unit = _marketplace_pricing(
+        service, endpoint["id"], cost, query, body,
+    )
+    return estimate
 
 
 async def _routed_access(endpoint: dict, caller: Caller, catalog) -> dict:

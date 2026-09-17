@@ -178,12 +178,21 @@ class Settings(BaseSettings):
     platform_key_trykitt: str = ""  # x-api-key; credits.jobCredits reports USD
     platform_key_contactout: str = ""  # raw API token; injected into the token header
     platform_key_millionverifier: str = ""  # raw key; injected as ?api=…
+    platform_key_bounceban: str = ""  # raw key in Authorization; prepaid verification credits
     platform_key_hunter: str = ""
     platform_key_sumble: str = ""  # Bearer; Pro monthly credits, optional vendor auto-top-up
+    platform_key_moltsets: str = ""  # Bearer; shared subscription fair-use pools, no auto-top-up
+    platform_key_openmart: str = ""  # Bearer; monthly subscription credits, no auto-top-up
     platform_key_harvestapi: str = ""  # X-API-Key; prepaid USD wallet
     platform_key_dropleads: str = ""  # X-API-Key; PAYG credits priced in fx.yaml
     platform_key_quickenrich: str = ""  # Bearer; monthly subscription credits, not auto-top-up
     platform_key_prospeo: str = ""  # X-KEY; Starter monthly subscription credits
+    platform_key_aiark: str = ""  # X-TOKEN; monthly subscription credits with rollover
+    platform_key_wiza: str = ""  # Bearer; prepaid API credits, no vendor auto-top-up
+    platform_key_limadata: str = ""  # x-api-key; monthly credits with configured auto top-up
+    platform_key_getleadsio: str = ""  # Bearer; 1,000 promotional database credits, capped treg trial
+    platform_key_scrubby: str = ""  # x-api-key; prepaid verification credits
+    platform_key_zerobounce: str = ""  # api_key query param; PAYG validation credits, Auto-Pay managed upstream
     platform_key_leadmagic: str = ""
     platform_key_lusha: str = ""
     platform_key_pdl: str = ""
@@ -249,18 +258,18 @@ class Settings(BaseSettings):
     # it by default" are separate questions, and the second one is answered by traffic, not by
     # argument.
     routed_discovery: str = "on"
-    # Per-org, per-UTC-day ceiling on tier-4 spend, and the CEILING a team may raise its own
-    # `Org.daily_cap_micro` to. Enforced FAIL-CLOSED (unlike the soft per-user call cap): a query
-    # error refuses the call rather than letting an unbounded amount of our money out. It is a
-    # blast-radius limit on a runaway agent or a mispriced catalog entry, not a billing control —
-    # the balance is what a team actually spends against.
+    # DEFAULT per-org, per-UTC-day limit on tier-4 spend, for a team that has not set its own
+    # `Org.daily_cap_micro`. 0 = no default limit. A team may set its own figure to anything,
+    # including 0 for no limit — the limit is the team's protection against a runaway agent
+    # draining a balance that auto-top-up keeps refilling, and that is the team's call to make.
+    # Enforced FAIL-CLOSED when one applies (unlike the soft per-user call cap): a query error
+    # refuses the call rather than letting an unbounded amount out.
     #
-    # Raised 100 -> 500 on 2026-08-29. At 100 an ordinary day's work tripped it: a benchmark agent
-    # exploring the catalog spends ~$0.10 a query, and 26 of 32 briefs came back empty because every
-    # call after the ceiling 429'd — the team had $92 of balance and could not use it. The rail is
-    # still here, and it is still ours to raise per team; it just should not fire before a real
-    # workload does.
-    platform_daily_cap_usd: float = 500.0
+    # History: 100 -> 500 on 2026-08-29 (ordinary benchmark work tripped it with balance to spare),
+    # then 500 -> none in 2026-09. In two weeks the platform-wide figure fired only on two prepaid
+    # teams mid-workload (thousands of refused calls against a funded balance) and never on abuse;
+    # the prepaid balance and the auto-top-up monthly cap already bound what a team can spend.
+    platform_daily_cap_usd: float = 0.0
     # OAuth providers whose UPSTREAM bill lands on treg's developer app rather than the connected
     # user (X moved to pay-per-use in Feb 2026: the app owner is billed per resource read / per post
     # written, whoever's token made the call). Calls through a registry connect of a provider named
@@ -331,10 +340,17 @@ class Settings(BaseSettings):
     archive_r2_read_timeout_s: float = Field(default=2.0, gt=0, le=120)
     archive_r2_terminal_attempts: int = Field(default=3, ge=1, le=5)
 
-    # Exact endpoint IDs, comma-separated. Empty means no serving, even in serve mode.
-    archive_serve_endpoints: str = ""
+    # Comma-separated: exact endpoint IDs, "capability:<prefix>" families (capability:people.),
+    # or "*" for every endpoint the policy allows (the default; an operator narrows it to ids or
+    # families to stage a rollout). Empty means no serving, even in serve mode - the rollback
+    # lever.
+    archive_serve_endpoints: str = "*"
     # Stable team/endpoint cohorts; 0 disables serving, 100 includes every team.
-    archive_serve_percent: int = 0
+    archive_serve_percent: int = 100
+    # What a metered REPEAT hit costs, as a percentage of the live price: a team's first call on a
+    # question pays full price whether the vendor or the archive answered it; from its second call
+    # on, a hit pays this share. 100 restores "a hit bills exactly like a live call".
+    archive_hit_repeat_price_percent: int = Field(default=10, ge=0, le=100)
     # Operator freshness ceilings by exact endpoint ID; independent of vendor declarations.
     archive_serve_max_age_s: dict[str, PositiveInt] = Field(default_factory=dict)
     # Bodies above this size are hash-counted but never stored (skipped whole, not truncated):
@@ -399,6 +415,10 @@ class Settings(BaseSettings):
     # ingestion key (safe to expose to the browser); host defaults to EU cloud.
     posthog_key: str = ""
     posthog_host: str = "https://eu.i.posthog.com"
+    # The code identity stamped on every analytics event as `build`. Empty means "use the commit the
+    # host exposes, else the installed package version" (analytics.build_id), so an operator only
+    # sets TREG_BUILD when the platform does not publish a commit variable.
+    build: str = ""
     # Intercom Messenger (support chat; treg's own workspace). Empty app_id = OFF, so self-hosted
     # instances never load the widget. The app_id is public (visible in page source); the secret
     # signs user_hash for identity verification and must never reach the browser.

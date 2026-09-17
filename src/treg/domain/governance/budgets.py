@@ -95,19 +95,16 @@ def _budget_dims_of(org: Org) -> list[str]:
 
 
 def _effective_daily_cap(org: Org) -> int:
-    """This team's ceiling on daily tier-4 spend: the LOWER of what they set and what we allow.
+    """This team's limit on daily tier-4 spend: their own figure, else the deployment default.
+    0 = no limit.
 
-    Two masters, which is why it is two numbers. The team's own figure protects them from a runaway
-    agent draining a balance that auto-top-up keeps refilling. The platform ceiling protects US from a
-    catalog mispricing, and only we can raise it — so onboarding a high-volume builder is a
-    conversation rather than an env-var edit that lifts the blast-radius rail for every team at once.
-
-    0 means "never set one", which follows the deployment default rather than freezing the team at
-    whatever that default happened to be the day they signed up.
+    The figure is the team's protection against a runaway agent draining a balance that auto-top-up
+    keeps refilling, so it is theirs to set in either direction. An `Org.daily_cap_micro` of 0 means
+    "never set one", which follows the deployment default (itself 0 = none, by default) rather than
+    freezing the team at whatever that default happened to be the day they signed up.
     """
-    ceiling = get_settings().platform_daily_cap_micro
     own = int(getattr(org, "daily_cap_micro", 0) or 0)
-    return min(own, ceiling) if own > 0 else ceiling
+    return own if own > 0 else get_settings().platform_daily_cap_micro
 
 
 async def _tag_budget(db: AsyncSession, org_id: int, dim: str, val: str,

@@ -702,6 +702,34 @@
         "title": "OrgIn",
         "type": "object"
       },
+      "OrgPatchIn": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slug"
+          }
+        },
+        "title": "OrgPatchIn",
+        "type": "object"
+      },
       "OrgSettingsIn": {
         "properties": {
           "budget_dims": {
@@ -7329,6 +7357,86 @@
           }
         },
         "summary": "Delete Org"
+      },
+      "patch": {
+        "description": "Change the team's display name and/or slug. Admin+.\n\nThe old slug is kept as an alias (`Org.previous_slug`): copied keys, `~/.treg` and MCP pins\nthat name it keep working. Stripe metadata and the analytics group key are not rewritten.",
+        "operationId": "rename_org_orgs__org_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "title": "Org Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-treg-token",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Treg-Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-treg-org",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "X-Treg-Org",
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "treg_session",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Treg Session",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrgPatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Rename Org Orgs  Org Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename Org"
       }
     },
     "/orgs/{org_id}/agents": {
@@ -10563,7 +10671,7 @@
         "summary": "Get Org Settings"
       },
       "patch": {
-        "description": "Set the team's own spend ceiling and which tag keys carry budgets. Admin+.\n\nA team may LOWER its ceiling freely; raising it past the platform ceiling is refused rather than\nsilently clamped, because a builder who thinks they set $500/day and actually got $5 discovers it\nas an outage in the middle of their launch.",
+        "description": "Set the team's own daily spend limit and which tag keys carry budgets. Admin+.\n\nThe limit is the team's own rail, so it moves in either direction: any positive figure, or 0 to\nfollow the deployment default (no limit, by default). Nothing is clamped silently — the value\nstored is the value sent.",
         "operationId": "set_org_settings_orgs__org_id__settings_patch",
         "parameters": [
           {

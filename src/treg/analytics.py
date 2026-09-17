@@ -36,8 +36,12 @@ this pipe was ever at risk from.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import os
 from collections import OrderedDict
 from datetime import datetime, timezone
+from importlib import metadata as _metadata
 import logging
 import re
 import threading
@@ -105,12 +109,55 @@ def enabled() -> bool:
     return bool(get_settings().posthog_key)
 
 
+# Commit variables the common hosts and CI systems export, checked in this order when TREG_BUILD is
+# empty. A generic list on purpose: the point is that every event says which code produced it.
+_COMMIT_ENV_NAMES = ("SOURCE_COMMIT", "GIT_COMMIT", "RENDER_GIT_COMMIT", "HEROKU_SLUG_COMMIT",
+                     "VERCEL_GIT_COMMIT_SHA", "GITHUB_SHA")
+
+
+def build_id() -> str:
+    """Which code produced an event: TREG_BUILD, else the host's commit variable, else the package
+    version. Analyses filter on it so a property that did not exist before a deploy is never read
+    as a value of that property (a null from an older build looks like a state otherwise)."""
+    explicit = get_settings().build.strip()
+    if explicit:
+        return explicit[:40]
+    for name in _COMMIT_ENV_NAMES:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value[:40]
+    try:
+        return "v" + _metadata.version("tools-registry")
+    except _metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def archive_config_id() -> str:
+    """A short digest of the archive settings that change what a call does (mode, serving
+    allowlist and percentage, repeat price, age ceilings, body storage, change observation).
+    Two events with the same `archive_config` were produced under the same cache configuration;
+    a configuration-only deploy changes it without changing `build`."""
+    s = get_settings()
+    material = {
+        "mode": s.archive_mode,
+        "serve_endpoints": s.archive_serve_endpoints,
+        "serve_percent": s.archive_serve_percent,
+        "repeat_price_percent": s.archive_hit_repeat_price_percent,
+        "serve_max_age_s": s.archive_serve_max_age_s,
+        "body_write": s.archive_body_write,
+        "change_observation": s.archive_change_observation_enabled,
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
 def capture(distinct_id: str, event: str, properties: dict | None = None,
             *, groups: dict[str, str] | None = None) -> None:
     """Queue one event. Synchronous, non-blocking, never raises.
 
     `groups` lands as $groups (e.g. {"team": org_slug}) so server events aggregate on the
-    same PostHog group the browser stamps via posthog.group('team', slug).
+    same PostHog group the browser stamps via posthog.group('team', slug). Every event also
+    carries `build` and `archive_config` (see build_id / archive_config_id) so a query can be
+    bounded to one code version or one cache configuration.
     """
     try:
         if not enabled() or len(_queue) >= _MAX_PENDING:
@@ -119,6 +166,8 @@ def capture(distinct_id: str, event: str, properties: dict | None = None,
         if groups:
             props["$groups"] = groups
         props["$lib"] = "treg-server"
+        props.setdefault("build", build_id())
+        props.setdefault("archive_config", archive_config_id())
         _queue.append({
             "event": event,
             "distinct_id": distinct_id,
@@ -128,6 +177,22 @@ def capture(distinct_id: str, event: str, properties: dict | None = None,
         _ensure_flusher()
     except Exception:  # noqa: BLE001 — analytics must never surface into a caller's path
         pass
+
+
+def capture_service_started(role: str) -> None:
+    """One event per process start, from the lifespan: the moment a build or a cache configuration
+    began serving. Queried next to `tool_called.build` / `archive_config`, it dates every change
+    in the data without anyone having to remember a deploy time."""
+    s = get_settings()
+    served = [item for item in s.archive_serve_endpoints.split(",") if item.strip()]
+    capture("treg-server", "service_started", {
+        "role": role,
+        "archive_mode": s.archive_mode,
+        "archive_serve_percent": s.archive_serve_percent,
+        "archive_serve_entries": len(served),
+        "archive_hit_repeat_price_percent": s.archive_hit_repeat_price_percent,
+        "archive_body_write": s.archive_body_write,
+    })
 
 
 def _fault_properties(fault: tuple[str, str, str, str | None], occurrences: int) -> dict:

@@ -104,6 +104,8 @@ endpoints:
     example_response: examples/companyenrich.companies.enrich.json
 
   - id: companyenrich.companies.enrich.by_properties
+    cache:
+      ignore_paths: ["updated_at"]
     domain: companies
     capability: companies.enrich
     miss:
@@ -262,6 +264,8 @@ endpoints:
   # Company search
   # ---------------------------------------------------------------------------------------------
   - id: companyenrich.companies.search
+    cache:
+      ignore_paths: ["items[*].updated_at"]
     domain: companies
     capability: companies.search
     platform: companies

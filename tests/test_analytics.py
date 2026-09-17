@@ -78,6 +78,50 @@ async def test_batch_shape_and_drain(enabled, posts):
     assert "$groups" not in batch[1]["properties"]  # no groups passed → no key at all
 
 
+async def test_every_event_carries_build_and_archive_config(enabled, posts, monkeypatch):
+    monkeypatch.setattr(get_settings(), "build", "abc1234", raising=False)
+    analytics.capture("a@b.c", "tool_called", {"provider": "tikhub"})
+    analytics.capture("a@b.c", "topup_started", {"build": "caller-wins"})
+    await analytics.drain()
+    first, second = posts[0]
+    assert first["properties"]["build"] == "abc1234"
+    assert len(first["properties"]["archive_config"]) == 12
+    assert first["properties"]["archive_config"] == analytics.archive_config_id()
+    assert second["properties"]["build"] == "caller-wins"  # an explicit value is never overwritten
+
+
+def test_build_id_prefers_setting_then_host_commit_then_version(monkeypatch):
+    for name in analytics._COMMIT_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(get_settings(), "build", "", raising=False)
+    assert analytics.build_id().startswith("v")  # installed package version
+    monkeypatch.setenv("SOURCE_COMMIT", "f" * 50)
+    assert analytics.build_id() == "f" * 40
+    monkeypatch.setattr(get_settings(), "build", " explicit ", raising=False)
+    assert analytics.build_id() == "explicit"
+
+
+def test_archive_config_id_changes_with_serving_settings(monkeypatch):
+    before = analytics.archive_config_id()
+    monkeypatch.setattr(get_settings(), "archive_serve_endpoints", "one.endpoint,two.endpoint", raising=False)
+    changed = analytics.archive_config_id()
+    assert changed != before and len(changed) == 12
+    monkeypatch.setattr(get_settings(), "archive_hit_repeat_price_percent", 100, raising=False)
+    assert analytics.archive_config_id() not in (before, changed)
+
+
+async def test_service_started_reports_role_and_archive_settings(enabled, posts, monkeypatch):
+    monkeypatch.setattr(get_settings(), "archive_serve_endpoints", "a.b,c.d", raising=False)
+    analytics.capture_service_started("all")
+    await analytics.drain()
+    (event,) = posts[0]
+    assert event["event"] == "service_started" and event["distinct_id"] == "treg-server"
+    props = event["properties"]
+    assert props["role"] == "all" and props["archive_serve_entries"] == 2
+    assert props["archive_mode"] == get_settings().archive_mode
+    assert props["build"] == analytics.build_id() and props["archive_config"] == analytics.archive_config_id()
+
+
 async def test_queue_is_bounded(enabled, monkeypatch):
     monkeypatch.setattr(analytics, "_MAX_PENDING", 10)
     for i in range(25):
@@ -130,6 +174,8 @@ def test_fault_payload_is_secret_minimal_and_truncated(enabled):
         "fault_type": "RuntimeError",
         "fault_occurrences": 1,
         "$lib": "treg-server",
+        "build": analytics.build_id(),
+        "archive_config": analytics.archive_config_id(),
     }
     assert "frames" not in str(event).lower()
     assert "traceback" not in str(event).lower()

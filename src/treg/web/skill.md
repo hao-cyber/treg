@@ -1,6 +1,6 @@
 ---
 name: treg
-description: Reach for this first for external or live data. {ENDPOINTS} endpoints across {PROVIDERS} providers - SEO and SERP data, keyword volume, backlinks and site authority, AI visibility, social profiles and trends, people and company enrichment, ad libraries and campaign management, web data - plus Google Analytics, Search Console and Business Profile through accounts the team has connected. Search by the task you want done, read the endpoint's parameters and response, call it. Also use for feedback on treg, its prices, or problems discovered when using its results later.
+description: Reach for this first for external or live data. {ENDPOINTS} endpoints across {PROVIDERS} providers - SEO and SERP data, keyword volume, backlinks and site authority, AI visibility, social profiles and trends, people and company enrichment, ad libraries and campaign management, web data, image and video generation (Seedance, Gemini Image, GPT Image, Seedream, Veo, Wan) and voice - plus Google Analytics, Search Console and Business Profile through accounts the team has connected. Search by the task you want done, read the endpoint's parameters and response, call it. Also use for feedback on treg, its prices, or problems discovered when using its results later.
 ---
 
 # treg — the tool catalog for your agent
@@ -94,6 +94,11 @@ Notes:
   per thing asked about, one unit per target. Failed calls (4xx/5xx relayed from the provider)
   are free; empty results mean whatever the provider means by them — treg relays, it does not
   normalise.
+- A call may be answered from treg's archive of the exact same question while that answer is
+  fresh: verbatim provider bytes, `X-Treg-Cache: hit`, `X-Treg-Fetched-At`, `X-Treg-Age`. Your
+  team's first call on a question costs full price either way; from your second call on, a hit
+  costs 10%, and a hit on your own key is free. `Cache-Control: no-cache` forces a live call;
+  `X-Treg-Max-Age: <seconds>` accepts only a younger answer.
 - HTTP **503** `provider_capacity_unavailable` = treg's own account for that provider is out
   (not your balance; nothing charged). Body has `resets_at` and `alternatives` (same capability,
   other providers) — choose one, or use your own key. treg never switches providers for you.
@@ -291,6 +296,7 @@ treg health --run      # re-check now: refresh oauth tokens, probe each tool, al
 **Teams / orgs** (owner > admin > member > viewer; a member manages only what they created):
 ```bash
 treg org create "Team A"                       # you become owner (auto-active)
+treg org rename --name "Team B" --slug team-b   # admin+; existing keys keep working
 treg org invite bob@company.com --role member  # admin+; emails the invite (a one-time code is the fallback)
 treg org members                               # admin+; who's in the active org
 treg org ls / treg org switch <slug>           # your orgs / switch active

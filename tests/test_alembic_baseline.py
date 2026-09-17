@@ -8,7 +8,8 @@ from typing import Any
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from sqlalchemy import text
+from sqlalchemy import insert, text
+from sqlalchemy import inspect as sa_inspect
 from sqlmodel import SQLModel
 from sqlmodel import select
 
@@ -63,6 +64,15 @@ async def test_alembic_head_has_no_model_drift():
         await db.reset_db()
 
 
+async def _insert_org_at_revision(session, **fields) -> int:
+    """Insert an org row using only the columns the CURRENT schema revision has."""
+    present = {c["name"] for c in await session.run_sync(
+        lambda sync: sa_inspect(sync.connection()).get_columns("org"))}
+    values = {k: v for k, v in Org(**fields).model_dump().items() if k in present and v is not None}
+    result = await session.execute(insert(Org.__table__).values(**values))
+    return result.inserted_primary_key[0]
+
+
 async def test_managed_key_migration_backfills_human_and_agent_hashes():
     """Upgrade keeps old secrets usable without needing plaintext."""
     await audit.drain()
@@ -72,10 +82,13 @@ async def test_managed_key_migration_backfills_human_and_agent_hashes():
         human_hash = crypto.hash_token("old-human-key")
         agent_hash = crypto.hash_token("old-agent-key")
         async with db.session_maker() as session:
-            org = Org(name="Before upgrade", slug="before-upgrade")
+            # The org table at 0033 predates columns the current model carries; insert only the
+            # columns that exist there, with the model's own defaults.
+            org_id = await _insert_org_at_revision(session, name="Before upgrade", slug="before-upgrade")
+            org = Org(id=org_id, name="Before upgrade", slug="before-upgrade")
             human = User(email="human@example.dev")
             agent = User(email="worker@agents.treg.local")
-            session.add(org); session.add(human); session.add(agent)
+            session.add(human); session.add(agent)
             await session.flush()
             session.add(Membership(user_id=human.id, org_id=org.id, role="owner",
                                    token_hash=human_hash))

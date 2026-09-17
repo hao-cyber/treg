@@ -2812,6 +2812,7 @@ _SITEMAP_PAGES: tuple[tuple[str, str, str], ...] = (
     ("/grokbot", "grokbot.html", "0.8"),
     ("/fable", "fable-gtm.html", "0.8"),
     ("/gpt6", "astra.html", "0.8"),
+    ("/ugc", "ugc.html", "0.8"),
     ("/terms", "terms.html", "0.2"),
     ("/privacy", "privacy.html", "0.2"),
     # The outcome pages. Listed WITHOUT a trailing slash on purpose: `/use-cases/<slug>/` 307s to
@@ -3021,6 +3022,13 @@ async def skill_md():
     return _serve_md("skill.md")
 
 
+@app.get("/skills/ugc/SKILL.md", include_in_schema=False)
+async def make_ugc_skill_md():
+    """The make-ugc orchestrator skill: the /ugc workflow as a file an agent can follow. Served from
+    the bundled copy (`.agents/skills/make-ugc` is a symlink to it) so the two never drift."""
+    return _serve_md("skills/make-ugc/SKILL.md")
+
+
 @app.get("/feedback.md", include_in_schema=False)
 async def feedback_md():
     return _serve_md("feedback.md")
@@ -3187,6 +3195,18 @@ async def gpt6_page():
     return FileResponse(page, headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/ugc", include_in_schema=False)
+async def ugc_page():
+    """Landing page for the AI-generated UGC workflow article: the five steps (trend pull,
+    JSON-prompt character, Seedance 2.5 talking head, phone demo + cloned voice, hooks at scale)
+    with the generated clips and the bill. Indexed like /people-search: canonical, OG meta,
+    in the sitemap, no-cache so edits land on refresh. Asset paths are relative (media/ugc/…)."""
+    page = _WEB_DIR / "ugc.html"
+    if not page.exists():
+        raise HTTPException(status_code=404, detail="ugc.html not bundled")
+    return FileResponse(page, headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/people-search", include_in_schema=False)
 async def people_search_page():
     """Landing page for the people-search launch ("Claude for people search") — the destination the
@@ -3204,6 +3224,8 @@ async def people_search_page():
 # chronological (newest first), not alphabetical.
 _BLOG_LAUNCHES: list[tuple[str, str, str, str]] = [
     # (slug, title, date, one-line blurb)
+    ("/ugc", "AI UGC Videos for $0.67 a Clip", "2026-09-15",
+     "The five-step workflow: trending hooks, a JSON-prompt character, Seedance 2.5, a cloned voice."),
     ("/gpt6", "GPT-6 and treg.to", "2026-09-08",
      "Codex demo: one prompt, the market read, and the catalog of tools it called."),
     ("/fable", "Claude Fable 5.1 + treg.to", "2026-09-02",
@@ -3362,15 +3384,15 @@ public_docs_router = APIRouter()
 app = public_docs_router
 
 
-def _skill_frontmatter() -> dict[str, str]:
+def _skill_frontmatter(name: str = "skill.md") -> dict[str, str]:
     """The bundled skill's frontmatter, read at request time rather than duplicated in code — the
     description is what drives discovery in every registry, and a second copy of it would drift."""
-    f = _WEB_DIR / "skill.md"
+    f = _WEB_DIR / name
     if not f.exists():
-        raise HTTPException(status_code=404, detail="skill.md not bundled")
+        raise HTTPException(status_code=404, detail=f"{name} not bundled")
     text = _fill_headline(f.read_text(encoding="utf-8"))
     if not text.startswith("---"):
-        raise HTTPException(status_code=404, detail="skill.md has no frontmatter")
+        raise HTTPException(status_code=404, detail=f"{name} has no frontmatter")
     out: dict[str, str] = {}
     for line in text.split("---", 2)[1].strip().splitlines():
         key, _, value = line.partition(":")
@@ -3387,11 +3409,11 @@ async def well_known_skills_index():
     — the same skill the plugins ship and `install.sh` drops, reached by whoever asks the domain.
     """
     fm = _skill_frontmatter()
-    return JSONResponse({"skills": [{
-        "name": fm.get("name", "treg"),
-        "description": fm.get("description", ""),
-        "files": ["SKILL.md"],
-    }]})
+    ugc = _skill_frontmatter("skills/make-ugc/SKILL.md")
+    return JSONResponse({"skills": [
+        {"name": fm.get("name", "treg"), "description": fm.get("description", ""), "files": ["SKILL.md"]},
+        {"name": ugc.get("name", "make-ugc"), "description": ugc.get("description", ""), "files": ["SKILL.md"]},
+    ]})
 
 
 @app.get("/.well-known/skills/treg/SKILL.md", include_in_schema=False)
@@ -3400,6 +3422,12 @@ async def well_known_skill_md():
     canonical `/skill.md` uses, so `{BASE}` is templated to the serving host here too — a self-hosted
     registry advertises ITSELF, not treg.to."""
     return _serve_md("skill.md")
+
+
+@app.get("/.well-known/skills/make-ugc/SKILL.md", include_in_schema=False)
+async def well_known_make_ugc_md():
+    """The second entry `index.json` promises; the same file as /skills/ugc/SKILL.md."""
+    return _serve_md("skills/make-ugc/SKILL.md")
 
 
 @app.get("/connect-demo", include_in_schema=False)

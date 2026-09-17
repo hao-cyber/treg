@@ -61,7 +61,7 @@ change is required. This is a current-ownership cap, not a daily creation limit.
 and the active team to match. Regular team membership alone does not expose another member's results.
 Team deletion removes evaluations before their runs through `ORG_SCOPED_MODELS`.
 
-- **`Org`** — `id, name, slug (unique), suspended, demo, public_demo, created_at`. The tenant that owns
+- **`Org`** — `id, name, slug (unique), previous_slug, suspended, demo, public_demo, created_at`. The tenant that owns
   secrets/tools/bundles. **`public_demo`** marks a team whose member token is PUBLISHED (e.g. on the
   landing page): non-admin members are locked to `/call` + reads and may never act as a user — enforced in
   `require_member` / `require_identity`.
@@ -153,7 +153,8 @@ Team deletion removes evaluations before their runs through `ORG_SCOPED_MODELS`.
   3. **The address is org-scoped** (`agent-{org.slug}-{name}@…`, mirroring `_public_demo_email`): two
      orgs must each own an agent called `deploy` without sharing one `User` row, or a superadmin
      suspending one tenant's agent would kill the other's. Agents are always looked up by
-     *(org + domain)*, never by recomputing the address, so an org rename can't orphan them.
+     *(org + domain)*, never by recomputing the address, so an org rename can't orphan them;
+     `_agent_name` strips the current OR previous slug prefix so pre-rename agents keep their name.
   Every identity door is blocked at the shared choke point `_find_or_create_user`, plus `register_user`
   (which predates it and creates a `User` directly) and `auth_email_start` (refuse early, mint no code).
   `list_members` carries `is_agent` so one roster can show people and machines apart.
@@ -315,7 +316,13 @@ bearer path refuses it once expired rather than reviving an expired cookie.
   when it removes an org's sole owner; the accept/create paths return a clean `409` (not a 500) on the
   membership/slug uniqueness race (`create_org` retries with a fresh `_unique_slug`).
 - **Slug vs id.** `_resolve_org` resolves `X-Treg-Org` by slug first (an all-digit slug like `2024` is
-  producible and must not be reinterpreted as a primary key).
+  producible and must not be reinterpreted as a primary key), then by `previous_slug`, then by id.
+- **Rename.** `PATCH /orgs/{id}` (admin+, `teams.rename_org`) changes `name` and/or `slug`. The slug
+  is baked into signed team keys, `~/.treg`, MCP pins and agent addresses, so a slug change retires
+  the old one into `previous_slug` instead of revoking every copied key: it still resolves, and no
+  other team may take it (`_slug_taken` checks both columns). One alias only; a second rename
+  overwrites it. Slugs are validated as their own `_slugify`, 3–40 chars, never `sbx-` (the sandbox
+  shape). Stripe metadata and the analytics group key keep the slug they were stamped with.
 
 ## Schema ownership
 Alembic owns the multi-tenant schema. The 0.14.x adoption release converted and stamped legacy

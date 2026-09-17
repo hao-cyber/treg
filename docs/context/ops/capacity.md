@@ -44,7 +44,40 @@ related:
 
 # Provider capacity
 
+LimaData exposes no free standalone balance API, so capacity reports its credit balance as
+dashboard-only. The assigned account's existing automatic top-up is enabled, and the default policy
+is `credits / auto_recharge / manual`. Shared-key smoothing uses the documented default one request
+per second; BYOK bypasses it. See [LimaData](../architecture/limadata.md).
+
+BounceBan's collector calls the free `GET /v1/account` route with the raw `Authorization` key and
+reads `available_credits`. Zero and finite nonnegative numbers are exact balances; missing, Boolean,
+string, negative, and non-finite values are unknown. Its policy is `credits / manual / api`, with a
+conservative shared-key rate of 25 requests per second. No reset, renewal, or auto-top-up behavior is
+inferred, and no overflow route is claimed. See [BounceBan](../architecture/bounceban.md).
+
+ZeroBounce's collector calls the free `GET /v2/getcredits` route with the query-bound key and reads
+`Credits`. Nonnegative integers and decimal strings are exact balances. Boolean, missing,
+malformed, and negative values are unknown; this includes the provider's invalid-key `-1` sentinel.
+Its policy is `credits / auto_recharge / api` for vendor-managed Auto-Pay, but treg does not read or
+change that setting. Shared-key pacing starts at 25 requests per second. No empty-account
+response was forced and no overflow route is claimed. See
+[ZeroBounce](../architecture/zerobounce.md).
+
+`collectors._moltsets` reads the free account envelope and reports the tighter rolling enrichment
+record remainder, with both enrichment/search request and record pools in its note. Missing
+enrichment windows produce unknown capacity rather than substituting the separate token/phone
+balance. Its `rolling_quota` type means the quota is measured over rolling windows; the explicit
+10/second smoothing policy is a routing pace, not a reinterpretation of the 5,000-request/5h
+capacity allowance. See [MoltSets](../architecture/moltsets.md).
+
 `collectors._sumble` reads `credits_remaining` from a free technology-search miss. Its monthly allowance and optional vendor top-ups remain separate from per-call pricing; no renewal date or auto-funding status is assumed. See [Sumble](../architecture/sumble.md).
+
+`collectors._getleadsio` reads numeric nonnegative `credits_remaining` from the free fair-use route.
+It represents the promotional database-credit allocation, not the separate Live Leads wallet.
+Default smoothing is the documented 100 requests per minute. An exact observed zero publishes the
+normal exhausted state: platform calls then receive the shared typed 503 with an own-key instruction
+before reserve, while BYOK remains available. No empty-account response was forced, so the upstream
+exhaustion signature remains unrecorded and no overflow route is claimed. See [GetLeads.io](../architecture/getleadsio.md).
 
 Financial Datasets uses the existing capacity path with `_KNOWN` policy
 `credits / auto_recharge / manual`. The official API publishes no free balance or usage endpoint,
@@ -133,13 +166,32 @@ The Starter allowance was not exhausted, so its provider-specific exhaustion res
 the acknowledged-unrecorded set and no overflow route is claimed. See
 [Prospeo](../architecture/prospeo.md).
 
+## Wiza prepaid API credits
+
+`collectors._wiza` calls the free `GET /api/meta/credits` route with the Bearer platform key and
+reads `credits.api_credits`. Zero is a valid exhausted balance. A missing, Boolean, negative,
+non-finite or non-numeric value fails the observation instead of becoming an allowance. The default
+policy is `credits / manual / api`; Wiza vendor auto-top-up is not enabled.
+
+The same route verifies pasted keys. The funded grant was not exhausted to manufacture an error,
+so Wiza remains in the acknowledged-unrecorded exhaustion set and has no overflow route. Search and
+autocomplete limits are not published. As a provisional policy, `_RATE_LIMITS` reuses the
+documented company-enrichment ceiling of 30 calls per minute for all Wiza platform calls because
+smoothing is not endpoint-aware. This spaces sequential platform calls by about two seconds, adding
+about 38 seconds of waiting across 20 one-row search pages; BYOK is unaffected. The bounded,
+process-local limiter reduces ordinary bursts but is not a strict quota gate: calls whose computed
+wait exceeds `DEFAULT_MAX_WAIT_MS` proceed. Relax the ceiling after real 429 evidence, or when
+smoothing becomes endpoint-aware. The public replacement rate and platform/BYOK boundary are
+documented in [Wiza](../architecture/wiza.md).
+
 ## Pieces (`src/treg/domain/capacity/`)
 
 - **`collectors.py`** — the providers' *free* balance/quota calls (`coroutine(client, key) →
   {value, unit, note}`), shared with `scripts/provider_balances.py`. Providers such as DataForSEO,
   TikHub, Brightdata, and Kitt AI report balances in USD; other meters include credits, rows, and searches. `NO_BALANCE_API`
-  names the 8 providers that publish no meter (dashboard-only) so they read as "no API", never as a
-  broken key.
+  names the 9 providers that publish no free standalone meter so they read as "no API", never as a
+  broken key. Scrubby reports `remaining_credits` only on verification responses; collection never
+  spends a verification merely to obtain that value.
   `provider_balance()` never raises — a failure is a row. It reads the *setting*, not
   `platform_key_for`: the tier-4 allow-list is a serving kill switch, and a provider just switched
   off is exactly one whose last balance we still want.
@@ -179,7 +231,8 @@ documented privately.
 
 ## Data
 
-`CapacityPolicy` (one row per account; `capacity_type`, `source`, `funding_mode`, auto-funding
+`CapacityPolicy` (one row per account; `capacity_type` is `cash`, `credits`, `requests`,
+`monthly_quota`, `rolling_quota`, `subscription`, or `unknown`; `source`, `funding_mode`, auto-funding
 fields, runway thresholds, `usd_per_unit_micro` NULL = never invent a dollar figure, `rate_limit`
 + `quota` JSON, `enabled` ⇔ a key exists) and `CapacitySnapshot` (append-only observations:
 `remaining`, `total`, `unit`, `resets_at`, `source`, `confidence`, `note`, `error`). Written by the

@@ -36,6 +36,7 @@ sources:
   - src/treg/models.py
   - src/treg/alembic/versions/0031_archive_result_admission.py
   - src/treg/alembic/versions/0032_archive_body_storage.py
+  - src/treg/alembic/versions/0039_archive_own_key_and_repeat_pricing.py
   - src/treg/alembic/versions/0033_signup_promo_eligibility.py
   - src/treg/timeutil.py
   - src/treg/infra/db.py
@@ -86,6 +87,15 @@ legacy DB path). Archive remains the only writer. An R2 location is published on
 verified upload finishes outside any DB session; `content_hash` is the object name. No new index,
 backfill, body-column removal or destructive migration occurs. Double-write rows retain their DB
 body/carrier; R2-only rows require no carrier pointer. See [archive](archive.md#body-storage-and-r2-double-writing).
+Migration `0039` adds nullable `ArchiveSnapshot.origin_org_id` (the team whose own credential
+fetched the answer; NULL = treg's platform key, every row before it - provenance), nullable
+`ArchiveKey.scope` (`org` | `conn` for a key private to an org or a connection; NULL = public,
+every key before it - the sharing scope is also folded into the key hash) and the
+`ArchiveKeyOrg` table, unique on `(org_id, key_hash)`: which teams have paid for which archived
+question, written by archive inside the metered settle transaction and read by lookup to price
+a repeat hit. See [archive](archive.md#own-key-answers),
+[sharing](archive.md#sharing-whose-question-is-it) and
+[pricing a hit](archive.md#pricing-a-hit).
 
 Revision `0033` adds nullable `User.email_verified_at` and non-null `signup_promo_available`,
 with a retained database default of false for existing rows and old writers. New application users
@@ -115,7 +125,8 @@ Revision `0010` adds `authorization_method` to `PendingOAuth` and `Secret`, back
 Instagram grants as `facebook-page`, and distinguishes new `instagram-login` grants. Selection
 uses this metadata, never the encrypted token's shape.
 
-- **`Org`** - the tenant that owns resources: `id, name, slug` (unique), `suspended` (admin lock),
+- **`Org`** - the tenant that owns resources: `id, name, slug` (unique), `previous_slug` (the slug
+  before the last rename, still resolved as an alias), `suspended` (admin lock),
   `demo` (a sandbox team seeded by [onboarding](../interface/onboarding.md) - labeled + removable),
   `public_demo` (a team whose member token is PUBLISHED, e.g. on the landing page - non-admin members
   are locked to `/call` + reads and may never act as a user; gated in
@@ -342,8 +353,9 @@ uses this metadata, never the encrypted token's shape.
   step) names the admin who minted an agent; `''` for door/invite joins.
 
 - **`CapacityPolicy` / `CapacitySnapshot`** - what each treg-owned vendor account (tier 4) meters and
-  how it is funded, and the append-only observations of what it has left. Written by the worker's
-  `treg-worker capacity sweep` only, never by the call path; the sweep also publishes a per-provider
+  how it is funded, and the append-only observations of what it has left. `capacity_type` includes
+  `rolling_quota` for allowances measured over moving windows rather than calendar resets. Written
+  by the worker's `treg-worker capacity sweep` only, never by the call path; the sweep also publishes a per-provider
   latest state into `Ephemeral` under `capacity:state:<provider>`, which the dataplane reads on a
   TTL beside its own breaker locks (`capacity:lock:<key>`, written by the call path only). Numbers
   only - never a credential. See `ops/capacity.md`. Alembic revision `0005` creates these two tables.
@@ -362,7 +374,7 @@ See [feedback](feedback.md) for attribution, submission, sampling and collection
 
 ## Bindings (the multi-credential shape)
 `Tool.bindings` is a JSON list; each entry is
-`{secret_id, injector, location, name, format, secret_field}` - one credential injection. A request
+`{secret_id, injector, location, name, format, secret_field, token_encode}` - one credential injection. A request
 applies **all** of a tool's bindings (e.g. google-ads = an oauth bearer + a `developer-token` header).
 The API builds a single-binding tool from flat fields via `_flat_binding()`; injection is in
 [auth-secrets](auth-secrets.md).
@@ -437,7 +449,14 @@ payment); it queues up to `_MAX_PENDING` events (drop-newest past the bound) and
 micro-batches them (`_BATCH_MAX` per POST, at most every `_FLUSH_INTERVAL_S`) via a per-flush httpx
 client - no semaphore, because HTTP to PostHog never touches the DB pool. **Empty `posthog_key` = the
 module is off** (self-hosters and the test suite send nothing). `$groups: {team: org_slug}` mirrors the
-browser's `posthog.group('team', slug)`. Attributed product events use the caller's email and team group,
+browser's `posthog.group('team', slug)`. Every event also carries `build` (`TREG_BUILD`, else the
+commit variable the host exports, else the installed package version; `build_id`) and
+`archive_config` (a 12-hex digest of the archive settings that change what a call does:
+mode, serving allowlist and percentage, repeat price, age ceilings, body storage, change
+observation; `archive_config_id`), and the lifespan emits one `service_started` per process with
+the role and those archive settings. They exist so an analysis can be bounded to one code version
+or one cache configuration instead of a remembered deploy time: a property that an older build
+never emitted reads as null there, and without the boundary that null looks like a state. Attributed product events use the caller's email and team group,
 so they join the same PostHog person/group the SPA identifies. A pre-identity `call_intake_failed` event
 instead uses the fixed `treg-server` identity and no team because authentication could not obtain a DB
 connection. Emitters:

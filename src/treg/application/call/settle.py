@@ -12,7 +12,8 @@ from collections.abc import Callable
 from sqlalchemy import update
 from sqlalchemy.exc import DBAPIError, TimeoutError as PoolTimeoutError
 
-from ... import adsconv
+from ... import adsconv, archive
+from ...config import get_settings
 from ...domain.capacity import marks as capacity_marks
 from ...domain.capacity import overflow_spend as overflow_spend_ledger
 from ...domain.capacity import signatures as capacity_signatures
@@ -25,7 +26,7 @@ from ...infra.db import session_maker
 from ...models import Org
 from ...timeutil import utcnow_naive as _utcnow_naive
 from .idempotency import _release_idempotent_claim
-from .resolve import MarketplaceCall, _usd_to_micro
+from .resolve import MarketplaceCall, _openmart_credits, _usd_to_micro
 from .types import GatewayFailed, UpstreamResponse
 
 
@@ -107,6 +108,29 @@ def _brightdata_record_count(body: bytes) -> int | None:
         # records bill at the snapshot download), an early download's {"status": "running"}, or any
         # other envelope. Pay-per-success means an answer with no records costs nothing.
         return 0
+    return None
+
+
+def _openmart_record_count(endpoint_id: str, doc: object) -> int | None:
+    """Count only the response containers verified for Openmart's synchronous data reads."""
+    if endpoint_id in (
+        "openmart.businesses.search",
+        "openmart.companies.enrich",
+    ):
+        if isinstance(doc, list):
+            return sum(item is not None for item in doc)
+        if isinstance(doc, dict) and isinstance(doc.get("data"), list):
+            return sum(item is not None for item in doc["data"])
+        return None
+    if endpoint_id == "openmart.companies.search":
+        if isinstance(doc, dict) and isinstance(doc.get("data"), list):
+            return sum(item is not None for item in doc["data"])
+        return None
+    if endpoint_id in (
+        "openmart.businesses.lookup.openmart",
+        "openmart.businesses.lookup.google-place",
+    ):
+        return sum(item is not None for item in doc.values()) if isinstance(doc, dict) else None
     return None
 
 
@@ -200,7 +224,13 @@ def _prospeo_cost_micro(mk: MarketplaceCall, doc: dict) -> int | None:
 
 
 # Providers whose exact charge rides a response header, in provider credits (fx.yaml rate).
-_CREDIT_HEADERS = {"crustdata": "x-credits-used", "cloro": "x-credits-charged"}
+# The multiplier makes the provider's sign convention explicit: most report a positive charge,
+# while AI Ark reports debits as negative `X-Credit` values.
+_CREDIT_HEADERS = {
+    "crustdata": ("x-credits-used", 1),
+    "cloro": ("x-credits-charged", 1),
+    "aiark": ("x-credit", -1),
+}
 
 
 def _observed_cost_micro(mk: MarketplaceCall, body: bytes, headers=None) -> int | None:
@@ -245,9 +275,11 @@ def _observed_cost_micro(mk: MarketplaceCall, body: bytes, headers=None) -> int 
         charge for a 2xx whose payload is an embedded error (verified live 2026-07-30 — see
         docs/context/architecture/catalog.md, "the provider decides what counts as success").
 
-      - crustdata / cloro: REPORTED in credits in a response HEADER (`_CREDIT_HEADERS`), the only
-        place the charge exists — cloro's ChatGPT/Google routes price their include flags and US
-        state targeting per request, so the catalog value is an upper bound and the header is the bill.
+      - crustdata / cloro / aiark: REPORTED in credits in a response HEADER (`_CREDIT_HEADERS`),
+        the only place the charge exists. AI Ark reports debits as negative `X-Credit` values; its
+        explicit -1 multiplier converts that convention to a nonnegative charge. cloro's
+        ChatGPT/Google routes price their include flags and US state targeting per request, so the
+        catalog value is an upper bound and the header is the bill.
       - exa: REPORTED in dollars, `costDollars.total` on every 2xx body (same contract as
         dataforseo's `cost`) — the only place the per-result and per-content riders exist.
       - fiber-ai: REPORTED in credits, `chargeInfo.creditsCharged` on every envelope, honoured
@@ -265,20 +297,21 @@ def _observed_cost_micro(mk: MarketplaceCall, body: bytes, headers=None) -> int 
         # the catalog base. Aviato simple search earned this rule from two multi-row live probes:
         # enrich=true returned only id rows and charged the same 0.25-credit base both times.
         return _usd_to_micro(float(cost["usd"]))
-    header_name = _CREDIT_HEADERS.get(provider)
-    if header_name and headers is not None:
+    header_spec = _CREDIT_HEADERS.get(provider)
+    if header_spec and headers is not None:
+        header_name, charge_multiplier = header_spec
         # REPORTED in a response HEADER rather than the body: Crustdata's X-Credits-Used and
-        # cloro's X-Credits-Charged are the exact per-call charge (cloro omits the header on its
-        # free routes and on a failed extraction, both of which it does not bill — an absent header
-        # therefore settles as unreported, at the estimate, not at zero).
+        # cloro's X-Credits-Charged are positive charges; AI Ark's X-Credit is a negative debit.
+        # cloro omits the header on its free routes and on a failed extraction, both of which it
+        # does not bill. An absent header settles as unreported, at the estimate, not at zero.
         raw = headers.get(header_name)
         rate = catalog_store.load().credit_rates.get(provider)
         try:
-            credits = float(raw)
+            charged_credits = float(raw) * charge_multiplier
         except (TypeError, ValueError):
-            credits = -1
-        if credits >= 0 and rate:
-            return _usd_to_micro(credits * rate)
+            charged_credits = -1
+        if math.isfinite(charged_credits) and charged_credits >= 0 and rate:
+            return _usd_to_micro(charged_credits * rate)
     if not body:
         return 0 if provider == "contactout" else None
     if provider == "brightdata" and mk.cost_type == "per_result" and mk.unit_micro > 0:
@@ -290,6 +323,9 @@ def _observed_cost_micro(mk: MarketplaceCall, body: bytes, headers=None) -> int 
         doc = json.loads(body)
     except (ValueError, UnicodeDecodeError):
         return 0 if provider == "contactout" else None
+    if provider == "openmart" and mk.cost_type == "per_result" and mk.unit_micro > 0:
+        records = _openmart_record_count(mk.endpoint_id, doc)
+        return None if records is None else _openmart_credits(records) * mk.unit_micro
     if provider == "aviato" and mk.endpoint_id == "aviato.people.enrich.bulk":
         if isinstance(doc, list) and mk.unit_micro > 0:
             return sum(item is not None for item in doc) * mk.unit_micro
@@ -310,6 +346,13 @@ def _observed_cost_micro(mk: MarketplaceCall, body: bytes, headers=None) -> int 
     if provider == "sumble":
         credits = doc.get("credits_used")
         # The request-time unit freezes the credit rate, including legitimate zero usage.
+        if type(credits) is int and credits >= 0:
+            return credits * mk.unit_micro
+        return None
+    if provider == "scrubby":
+        credits = doc.get("credits_used")
+        # Scrubby reports the exact per-call charge, including zero for a cached retry.
+        # The request-time unit freezes the supplied $/credit acquisition rate.
         if type(credits) is int and credits >= 0:
             return credits * mk.unit_micro
         return None
@@ -576,14 +619,69 @@ async def _peek_stream_head(response: UpstreamResponse, limit: int) -> tuple[Ups
 
     out = UpstreamResponse(response.status, response.raw_headers, replay(), response.close)
     return out, bytes(head)
+async def _read_whole_if_small(
+    response: UpstreamResponse, limit: int,
+) -> tuple[UpstreamResponse, bytes | None]:
+    """Read an own-key answer whole when it fits `limit` bytes, else replay it untouched.
+
+    The archive records own-key answers too, and a recording needs the complete body. Reading up
+    to `limit` (the archive's own body cap, 2 MB by default) before sending headers costs an
+    own-key call the same bounded buffering a metered call already pays; an answer that does not
+    fit streams on from the first byte past the limit and is NOT recorded — never a prefix. A
+    declared Content-Length above the limit skips the read entirely."""
+    declared = next((v for k, v in response.raw_headers if k.lower() == b"content-length"), None)
+    if declared is not None:
+        try:
+            if int(declared) > limit:
+                return response, None
+        except ValueError:
+            pass
+    iterator = response.body_stream.__aiter__()
+    consumed: list[bytes] = []
+    size = 0
+    complete = False
+    while size <= limit:
+        try:
+            chunk = await iterator.__anext__()
+        except StopAsyncIteration:
+            complete = True
+            break
+        raw = chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8", "replace")
+        consumed.append(raw)
+        size += len(raw)
+    if complete:
+        body = b"".join(consumed)
+
+        async def whole():
+            yield body
+
+        return UpstreamResponse(response.status, response.raw_headers, whole(), response.close), body
+
+    async def replay():
+        for chunk in consumed:
+            yield chunk
+        async for chunk in iterator:
+            yield chunk
+
+    return UpstreamResponse(response.status, response.raw_headers, replay(), response.close), None
+
+
 async def _platform_settle(
     mk: MarketplaceCall, status_code: int | None, body: bytes = b"", *, headers=None,
     reason: str = "", finalized: Callable[[], None] | None = None,
     observed_override: int | None = None, overflow_spend: tuple[str, int, int] | None = None,
+    archive_use: tuple[int, str] | None = None, cached_hit: bool = False,
+    cached_repeat: bool = False,
 ) -> tuple[int, int | None]:
     """Close the hold for a metered call → (charged_micro, observed_micro). `charged_micro` is what
     actually hit the org's balance (0 on a release) — the number the Activity feed must show, because
     the estimate alone over-reports a released call as spend.
+
+    `archive_use` = (org_id, key_hash) of the archived question this call was billed for, live or
+    hit: the settle transaction also marks the team as having paid for it. `cached_hit` says the
+    archive answered instead of the vendor; `cached_repeat` adds that the team had already paid
+    for this question - the one pricing difference a hit has: it settles at
+    `archive_hit_repeat_price_percent` of what the live call would cost.
 
     `status_code=None` means the provider never answered us (our own 4xx, an injection error, a network
     failure) — always a release, never a charge, whatever the endpoint's billing type says.
@@ -625,6 +723,12 @@ async def _platform_settle(
     # success costs, and this was not one.
     actual = ((0 if observed == 0 else settlement_basis.settle(
         mk.settlement_basis, {"observed_micro": observed})) if billable else None)
+    repeat_percent = get_settings().archive_hit_repeat_price_percent
+    if billable and cached_repeat and actual is not None:
+        # The repeat price: the team already paid full price for this question once (live or
+        # hit); this stored answer costs the configured share. Applied to the RAW amount so the
+        # margin rule stays the ledger's alone. Floor division, never rounding up a discount.
+        actual = actual * repeat_percent // 100
     call_id, mk.call_id = mk.call_id, None  # closing is once-only, even if two paths try
     charged = 0
 
@@ -636,7 +740,12 @@ async def _platform_settle(
                     "cost_source": ("aggregator" if overflow_spend is not None else
                                     "provider" if observed is not None else
                                     mk.settlement_basis.get("amount", {}).get("kind", "estimate")),
-                    **({"served_via": f"overflow:{overflow_spend[0]}"} if overflow_spend else {})})
+                    **({"served_via": f"overflow:{overflow_spend[0]}"} if overflow_spend else {}),
+                    **({"cached": True,
+                        "cache_price_percent": repeat_percent if cached_repeat else 100}
+                       if cached_hit else {})})
+                if archive_use is not None:
+                    await archive.note_org_use_in_transaction(db, archive_use[0], archive_use[1])
             else:
                 await ledger.release_in_transaction(
                     db, call_id, reason=reason or f"not_billable_{status_code}",

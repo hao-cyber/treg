@@ -338,8 +338,7 @@ endpoints:
         include_serp_info: {type: boolean, required: false, note: "attach SERP data per keyword; default false"}
         include_clickstream_data: {type: boolean, required: false, note: "DOUBLES the cost; default false"}
         ignore_synonyms: {type: boolean, required: false, note: "drop near-duplicate keywords; default false"}
-        filters: {type: array, required: false, note: "max 8 conditions; keyword_info.search_volume and keyword_properties.keyword_difficulty are accepted"}
-      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays). Sorting is unsupported on this route — do not send order_by (live API returns 40501 Invalid Field even though the vendor docs list it)."
+      note: "POST body is an array with exactly 1 task object (Live endpoints do not support multi-task arrays). Sorting and filtering are unsupported on this route — do not send order_by or filters (live API returns 40501 Invalid Field even though the vendor docs list them)."
     test_request:
       body:
         - {keyword: "coffee", location_code: 2840, language_code: "en", depth: 1, limit: 2}

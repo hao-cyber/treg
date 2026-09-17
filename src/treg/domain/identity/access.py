@@ -121,6 +121,10 @@ async def _resolve_org(ref: str, db: AsyncSession) -> Org | None:
     by_slug = (await db.execute(select(Org).where(Org.slug == ref))).scalar_one_or_none()
     if by_slug is not None:
         return by_slug
+    # A renamed team's old slug lives on in copied keys, `~/.treg` and MCP pins.
+    by_old = (await db.execute(select(Org).where(Org.previous_slug == ref))).scalar_one_or_none()
+    if by_old is not None:
+        return by_old
     # int() of a huge all-digit ref would overflow SQLite's 64-bit INTEGER → 500 inside the auth
     # dependency; bound it so an out-of-range X-Treg-Org just falls through to the 400.
     return await db.get(Org, int(ref)) if (ref.isdigit() and int(ref) < 2**63) else None
@@ -281,7 +285,7 @@ async def require_member(
             # Membership removal revokes and detaches its keys for audit. A signed Default token has
             # no hash to find, so consult that retained control row before answering as though this
             # identity had never belonged to the team.
-            if x_treg_token and identity_claims and identity_claims.get("org") == org.slug:
+            if x_treg_token and identity_claims and identity_claims.get("org") in (org.slug, org.previous_slug):
                 retained_default = (await db.execute(select(ApiKey).where(
                     ApiKey.org_id == org.id,
                     ApiKey.membership_id.is_(None),

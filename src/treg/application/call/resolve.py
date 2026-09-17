@@ -515,6 +515,45 @@ def _truthy(value) -> bool:
     return value is True or (isinstance(value, str) and value.strip().lower() in ("1", "true", "yes"))
 
 
+_OPENMART_METERED_ENDPOINTS = frozenset({
+    "openmart.businesses.search",
+    "openmart.businesses.lookup.openmart",
+    "openmart.businesses.lookup.google-place",
+    "openmart.companies.enrich",
+    "openmart.companies.search",
+})
+_OPENMART_LOOKUP_ENDPOINTS = frozenset({
+    "openmart.businesses.lookup.openmart",
+    "openmart.businesses.lookup.google-place",
+})
+_OPENMART_PLATFORM_MAX_RECORDS = 25
+
+
+def _openmart_credits(records: int) -> int:
+    """Openmart bills 3 credits per 10 returned records, rounded up per operation."""
+    return 0 if records <= 0 else (3 * records + 9) // 10
+
+
+def _openmart_requested_records(endpoint_id: str, body: bytes) -> int | None:
+    """Read the requested Openmart result ceiling without changing a BYOK request."""
+    if not body:
+        return None
+    try:
+        document = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if endpoint_id in _OPENMART_LOOKUP_ENDPOINTS:
+        return len(document) if isinstance(document, list) else None
+    if not isinstance(document, dict):
+        return None
+    if endpoint_id == "openmart.companies.search":
+        pagination = document.get("pagination")
+        value = pagination.get("limit") if isinstance(pagination, dict) else None
+    else:
+        value = document.get("limit")
+    return value if type(value) is int else None
+
+
 def _json_object(body: bytes) -> dict:
     try:
         doc = json.loads(body) if body else {}
@@ -580,6 +619,14 @@ def _marketplace_pricing(
     """
     if not cost:
         return 0, 0
+    if provider == "openmart" and endpoint_id in _OPENMART_METERED_ENDPOINTS:
+        rate = catalog_store.load().credit_rates.get("openmart")
+        if rate:
+            requested = _openmart_requested_records(endpoint_id, body)
+            bounded = max(1, min(requested or _OPENMART_PLATFORM_MAX_RECORDS,
+                                 _OPENMART_PLATFORM_MAX_RECORDS))
+            credit_micro = _usd_to_micro(rate)
+            return _openmart_credits(bounded) * credit_micro, credit_micro
     if provider == "sumble" and cost.get("sumble"):
         from . import sumble
         credit = _usd_to_micro(float(cost.get("usd") or 0) * int(cost.get("per") or 1))
@@ -833,14 +880,19 @@ def _platform_bindings(provider) -> list[dict]:
     (`_provider_bindings`), except the value is named rather than carried — `relay` reads
     `platform_setting` from settings at call time. That is the whole security model: treg's key is
     never written to a Secret row (unreadable by the tenant, unexportable by a local run, and
-    `api.py`'s cross-org secret check would reject it anyway)."""
+    `api.py`'s cross-org secret check would reject it anyway).
+
+    `token_encode` is carried for HTTP Basic providers so the injector can ensure Base64 encoding,
+    matching `_provider_bindings` for tiers 1/2. Platform settings should already be encoded, but
+    carrying the attribute costs nothing and keeps the contract explicit."""
     setting = platform_setting_name(provider.service)
+    encode_attr = {"token_encode": provider.token_encode} if provider.token_encode else {}
     if provider.token_location == "query":
         bindings = [{"platform_setting": setting, "injector": "env", "location": "query",
-                     "name": provider.token_param, "format": provider.token_format}]
+                     "name": provider.token_param, "format": provider.token_format, **encode_attr}]
     else:
         bindings = [{"platform_setting": setting, "injector": "env", "location": "header",
-                     "name": provider.token_header, "format": provider.token_format}]
+                     "name": provider.token_header, "format": provider.token_format, **encode_attr}]
     # Keep tier 4 protocol-identical to BYOK. Required provider headers are constants, but they
     # still use the same platform setting reference so the normal binding validator and injector
     # own the whole shape. Crustdata's x-api-version pin is the first provider that needs this.
@@ -1099,6 +1151,26 @@ def _enforce_platform_request(ep: dict, body: bytes) -> None:
     has a singleton enum is the row identity, not caller choice: accepting another value lets a cheap
     row reserve for an expensive model. Full schema validation remains out of the faithful BYOK path.
     """
+    if ep.get("provider") == "openmart" and ep.get("id") in _OPENMART_METERED_ENDPOINTS:
+        requested = _openmart_requested_records(ep["id"], body)
+        parameter = (
+            "body" if ep["id"] in _OPENMART_LOOKUP_ENDPOINTS
+            else "body.pagination.limit" if ep["id"] == "openmart.companies.search"
+            else "body.limit"
+        )
+        if requested is None or not 1 <= requested <= _OPENMART_PLATFORM_MAX_RECORDS:
+            raise ResolutionFailed(
+                "catalog_parameter_invalid", status_code=400, detail={
+                    "error": "catalog_parameter_invalid",
+                    "endpoint_id": ep["id"],
+                    "parameter": parameter,
+                    "message": (
+                        "Openmart platform calls require an explicit result count from 1 to 25; "
+                        "connect your own key for the upstream limit"
+                    ),
+                },
+            )
+
     input_schema = ep.get("input") or {}
     selectors: dict[str, object] = {
         path.removeprefix("body."): value

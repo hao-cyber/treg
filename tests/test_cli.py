@@ -1111,3 +1111,31 @@ def test_host_prints_the_url_alone_and_the_full_response_under_json(monkeypatch,
     assert capsys.readouterr().out == "http://x/m/tok\n"
     cli.main(["host", str(f), "--json"])
     assert json.loads(capsys.readouterr().out)["token"] == "tok"
+
+
+def test_org_rename_follows_slug_change_locally(monkeypatch, tmp_path):
+    """`treg org rename --slug` rewrites active_org; the pinned token is untouched because the server
+    keeps the old slug as an alias."""
+    monkeypatch.setattr(cli, "CONFIG_PATH", tmp_path / "config.json")
+    monkeypatch.setattr(cli, "_JSON_OVERRIDE", False)  # another test may have left --json on
+    saved = {}
+    monkeypatch.setattr(cli, "_save_config", lambda cfg: saved.update(cfg))
+    monkeypatch.setattr(cli, "_active_org_id", lambda cfg, c: 7)
+    calls = []
+
+    class Response:
+        status_code = 200
+        def json(self):
+            return {"org_id": 7, "org": "team-b", "previous_slug": "team-a", "name": "Team B"}
+
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def patch(self, path, json=None):
+            calls.append((path, json)); return Response()
+
+    monkeypatch.setattr(cli, "_client", lambda cfg: Client())
+    cfg = {"base_url": "http://x", "token": "TK", "active_org": "team-a"}
+    cli.cmd_org_rename(type("A", (), {"name": "Team B", "slug": "team-b"})(), cfg)
+    assert calls == [("/orgs/7", {"name": "Team B", "slug": "team-b"})]
+    assert cfg["active_org"] == "team-b" and cfg["token"] == "TK" and saved["active_org"] == "team-b"

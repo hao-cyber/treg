@@ -33,6 +33,8 @@ source:
 pricing_url: https://leadmagic.io/pricing
 endpoints:
   - id: leadmagic.people.email.find
+    cache:
+      ignore_paths: ["processed_at"]
     domain: contacts
     capability: people.email.find
     platform: people
@@ -68,6 +70,8 @@ endpoints:
     docs_url: https://leadmagic.io/docs/api-reference/email-finder
 
   - id: leadmagic.people.email.verify
+    cache:
+      ignore_paths: ["validated_at", "credits_consumed", "pipeline_version", "message", "validation_path_code"]
     domain: contacts
     capability: people.email.verify
     platform: people

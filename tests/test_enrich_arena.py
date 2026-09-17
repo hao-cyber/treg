@@ -35,6 +35,104 @@ async def plan(c, mode="compare", providers=None, **extra):
     return r.json()
 
 
+async def test_bounceban_enters_email_verification_arena_via_verified_adapter(
+    clients, monkeypatch,
+):
+    from treg.config import get_settings
+    monkeypatch.setenv("TREG_PLATFORM_KEY_BOUNCEBAN", "PLATFORM-BOUNCEBAN")
+    monkeypatch.setenv("TREG_PLATFORM_PROVIDERS", "bounceban")
+    get_settings.cache_clear()
+    response = await clients.post("/arena/plans", json={
+        "capability": "people.email.verify",
+        "identity": {"email": "dev@bounceban.com"},
+        "mode": "compare",
+        "providers": ["bounceban"],
+        "max_cost_micro": 10_000,
+    })
+    assert response.status_code == 200, response.text
+    quote = response.json()
+    assert len(quote["providers"]) == 1
+    assert quote["providers"][0]["provider"] == "bounceban"
+    assert quote["providers"][0]["endpoint_id"] == "bounceban.people.email.verify"
+    assert quote["estimate_micro"] == 4_000
+    get_settings.cache_clear()
+
+
+async def test_aiark_email_finder_enters_the_enrichment_arena(clients, monkeypatch):
+    from treg.config import get_settings
+
+    monkeypatch.setenv("TREG_PLATFORM_KEY_AIARK", "PLATFORM-AIARK")
+    monkeypatch.setenv("TREG_PLATFORM_PROVIDERS", "aiark")
+    get_settings.cache_clear()
+    response = await clients.post("/arena/plans", json={
+        "capability": "people.email.find",
+        "identity": {"linkedin_url": "https://www.linkedin.com/in/example"},
+        "mode": "compare",
+        "providers": ["aiark"],
+        "max_cost_micro": 100_000,
+    })
+    assert response.status_code == 200, response.text
+    quote = response.json()
+    assert quote["providers"][0]["endpoint_id"] == "aiark.people.email.find"
+    assert quote["estimate_micro"] == 5267
+    get_settings.cache_clear()
+
+
+def test_limadata_verified_adapters_enter_the_enrichment_arena():
+    seen = {}
+    for task in arena.public_tasks():
+        endpoints = {
+            preview["endpoint_id"]
+            for previews in task["provider_previews"]
+            for preview in previews
+            if preview["provider"] == "limadata"
+        }
+        if endpoints:
+            seen[task["id"]] = endpoints
+    assert seen == {
+        "people.email.find": {
+            "limadata.people.email.find.name",
+            "limadata.people.email.find.linkedin",
+        },
+        "people.email.verify": {"limadata.people.email.verify"},
+        "people.phone.find": {"limadata.people.phone.find"},
+        "companies.enrich": {"limadata.companies.enrich"},
+    }
+
+
+async def test_zerobounce_verifier_enters_arena_but_expensive_finder_does_not(
+    clients, monkeypatch,
+):
+    from treg.config import get_settings
+    monkeypatch.setenv("TREG_PLATFORM_KEY_ZEROBOUNCE", "PLATFORM-ZEROBOUNCE")
+    monkeypatch.setenv("TREG_PLATFORM_PROVIDERS", "zerobounce")
+    get_settings.cache_clear()
+    response = await clients.post("/arena/plans", json={
+        "capability": "people.email.verify",
+        "identity": {"email": "valid@example.com"},
+        "mode": "compare",
+        "providers": ["zerobounce"],
+        "max_cost_micro": 20_000,
+    })
+    assert response.status_code == 200, response.text
+    quote = response.json()
+    assert len(quote["providers"]) == 1
+    assert quote["providers"][0]["provider"] == "zerobounce"
+    assert quote["providers"][0]["endpoint_id"] == "zerobounce.people.email.verify"
+    assert quote["estimate_micro"] == 13_800
+
+    finder_response = await clients.post("/arena/plans", json={
+        "capability": "people.email.find",
+        "identity": {"full_name": "Ada Lovelace", "domain": "example.com"},
+        "mode": "compare",
+        "providers": ["zerobounce"],
+        "max_cost_micro": 300_000,
+    })
+    assert finder_response.status_code == 422
+    assert "cannot use this input" in finder_response.text
+    get_settings.cache_clear()
+
+
 async def finish(c, quote):
     r = await c.post(f"/arena/runs/{quote['id']}/start")
     assert r.status_code == 200, r.text
@@ -928,6 +1026,15 @@ def test_discovery_public_cohorts_keep_all_requested_constraints():
     assert {'tomba','companyenrich'} <= {p['provider'] for p in similar}
     assert tasks['companies.similar']['max_entries'] == 10
     assert next(p for p in similar if p['provider']=='companyenrich')['estimate_micro'] > next(p for p in similar if p['provider']=='tomba')['estimate_micro']
+
+
+def test_openmart_is_not_offered_in_enrich_arena():
+    assert all(
+        preview["provider"] != "openmart"
+        for task in arena.public_tasks()
+        for cohort in task["provider_previews"]
+        for preview in cohort
+    )
 
 
 def test_search_outputs_are_bounded_sanitized_and_survive_presentation():

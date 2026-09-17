@@ -69,6 +69,10 @@ the key creator metadata; the internal `agent-{team}-{name}@agents.treg.local` i
 The Key chip shows its safe prefix visibly, so Activity from pre- and post-rotation keys with the same
 name remains distinguishable.
 Human Activity rows keep their existing short email identity.
+The loaded Activity window counts calls served from the archive and shows that summary only when it
+contains a cache hit. Each cached call also carries a quiet `Cached` pill beside its actual charge;
+the displayed amount remains the settled charge from `/calls`, including free own-key hits and
+reduced metered repeat hits. The key selector and success filter continue to operate independently.
 
 Catalog provider choices show each endpoint's optional `name` below the provider name.
 Names wrap and are included in the platform filter. This distinguishes tools that use the
@@ -354,7 +358,11 @@ Server side (`domain.identity.access`): `require_identity` (who, from token OR s
     it; the setup webhook then arms the policy. A team that already has a mandate sees a read-only
     "auto top-up is on" line instead. The preselected card is `topup.default_usd`, which is per-org:
     one preset above the last manual top-up, capped at $50 (see [money](../architecture/money.md)).
-  - **Team settings** — deliberately JUST the **Danger zone** (leave / delete), visible to EVERY role
+  - **Team settings** — the daily spend limit, a **Team name and slug** form (admin+, prefilled from
+    the active team by `resetRenameForm` on tab open and on team switch; Save is enabled only when a
+    value differs and `renameOrg` sends just the changed fields to `PATCH /orgs/{id}`; on a slug
+    change the active slug in `localStorage`/`cfg.orgs` follows the new one and the page reloads its
+    lists) and the **Danger zone** (leave / delete), visible to EVERY role
     (leaving is self-service, and `loadOrgAdmin` lands a non-admin here). New team / Join by code /
     Paste token live only in the sidebar picker — cut from this tab on founder review; a personal
     team shows a one-line explainer instead of an empty page.

@@ -1,0 +1,253 @@
+# Complete documented surface: standard/waterfall single verification, single status, JSON and
+# CSV bulk submission, bulk status/emails/dump/export/destroy, Check API, and Account API.
+# Excluded from direct tools: multipart CSV upload (no catalog file-upload contract), destructive
+# bulk destroy, and /v1/check (a separate unfunded Check Plan with no supplied acquisition price).
+# Webhook parameters remain available on BYOK-only bulk and waterfall submissions. The platform
+# single tool omits them and omits disable_catchall_verify so every 2xx submission has the proven
+# fixed one-credit price.
+provider: bounceban
+source:
+  docs: https://bounceban.com/public/doc/api.html
+  openapi: https://bounceban.com/public/doc/api.yaml
+  curated: '2026-09-16'
+pricing_url: https://bounceban.com/pricing
+limits: "Live account limits on 2026-09-16: single and single-status 100/second, bulk create 5/second, bulk reads 25/second, account 5/second. Results remain available for 90 days."
+proposed_capabilities:
+  people.email.verify.status: Poll a single email-verification task
+  people.email.verify.bulk: Submit a list for asynchronous email verification
+  people.email.verify.bulk.status: Read bulk email-verification progress and totals
+  people.email.verify.bulk.emails: Read selected results from a bulk email-verification task
+  people.email.verify.bulk.dump: List cursor-paginated bulk email-verification results
+  people.email.verify.bulk.export: Create a CSV download link for bulk email-verification results
+
+endpoints:
+  - id: bounceban.people.email.verify
+    domain: contacts
+    capability: people.email.verify
+    platform: people
+    scope: any_account
+    method: GET
+    path: /v1/verify/single
+    name: Verify an email address
+    summary: Verify email deliverability, including catch-all and protected mailboxes
+    input:
+      queryParams:
+        email: {type: string, required: true, note: "email address to verify", example: "dev@bounceban.com"}
+        mode: {type: string, required: false, enum: [regular, deepverify], default: regular, note: "deepverify assumes the domain matches the person's current company"}
+      note: "The standard endpoint waits up to 15 seconds. A 200 response can have status=verifying; poll bounceban.people.email.verify.status with its id. Platform calls always use full verification: the zero-cost disable_catchall_verify option is not exposed on this tool."
+    test_request: {queryParams: {email: "dev@bounceban.com"}}
+    cost:
+      type: per_call
+      value: 1
+      currency: credit
+      per: 1
+      unit: call
+      source: observed
+      source_url: https://bounceban.com/public/doc/api.html#tag/Single-Verification
+      checked: '2026-09-16'
+      confidence: verified
+      note: "One verification credit for every accepted standard submission, including a 200 status=verifying response and final unknown results. Invalid input returned 400 and used no credit. The supplied acquisition rate is $0.004 per credit."
+    verified: '2026-09-16'
+    example_response: examples/bounceban.people.email.verify.json
+    docs_url: https://bounceban.com/public/doc/api.html#tag/Single-Verification
+
+  - id: bounceban.people.email.verify.waterfall
+    domain: contacts
+    capability: people.email.verify
+    platform: people
+    scope: any_account
+    method: GET
+    host: api-waterfall.bounceban.com
+    path: /v1/verify/single
+    name: Verify an email and wait for the result
+    summary: Hold one request open until verification finishes or the configured timeout expires
+    input:
+      queryParams:
+        email: {type: string, required: true, example: "dev@bounceban.com"}
+        mode: {type: string, required: false, enum: [regular, deepverify], default: regular}
+        timeout: {type: integer, required: false, min: 30, max: 300, default: 80, note: "seconds to wait"}
+        disable_catchall_verify: {type: string, required: false, enum: ['0', '1'], default: '0', note: "1 skips catch-all verification; an unknown score=-1 result costs zero"}
+        url: {type: string, required: false, note: "BYOK webhook URL for the final result"}
+      note: "BYOK only. Repeating the same email within 30 minutes is free, but the response repeats the original credits_consumed value, so treg cannot settle a shared-key retry exactly."
+    test_request: {queryParams: {email: "dev@bounceban.com", timeout: 80}}
+    cost:
+      type: per_success
+      value: 1
+      currency: credit
+      per: 1
+      unit: call
+      source: docs
+      source_url: https://bounceban.com/public/doc/api.html#tag/Single-Verification
+      checked: '2026-09-16'
+      confidence: documented
+      note: "Normally one credit. Same-email retries within 30 minutes and catch-all unknown results with disable_catchall_verify=1 can be free. BYOK is not metered by treg."
+    platform_blocked: "Free retry and conditional zero-credit rules cannot be settled from the repeated response; connect your own BounceBan key."
+    verified: '2026-09-16'
+    example_response: examples/bounceban.people.email.verify.waterfall.json
+    docs_url: https://bounceban.com/public/doc/api.html#tag/Single-Verification
+
+  - id: bounceban.people.email.verify.status
+    kind: utility
+    domain: contacts
+    capability: people.email.verify.status
+    platform: people
+    scope: any_account
+    method: GET
+    path: /v1/verify/single/status
+    name: Get a single verification result
+    summary: Poll a submitted verification by its task ID
+    input:
+      queryParams:
+        id: {type: string, required: true, note: "task id returned by a standard or waterfall single request", example: "sanitized-task-id"}
+      note: "Free. Poll no more than 10 times per id in five minutes and stop after five minutes. BYOK only because task ownership belongs to the connected account."
+    test_request: {queryParams: {id: "sanitized-task-id"}}
+    cost: {type: free, value: 0, currency: USD, unit: call, confidence: verified, note: "Live status polling used no verification credit"}
+    platform_blocked: "Shared-key task ownership is not available; connect your own BounceBan key."
+    verified: '2026-09-16'
+    example_response: examples/bounceban.people.email.verify.status.json
+    docs_url: https://bounceban.com/public/doc/api.html#tag/Single-Verification
+
+  - id: bounceban.people.email.verify.bulk
+    domain: contacts
+    capability: people.email.verify.bulk
+    platform: people
+    scope: any_account
+    method: POST
+    path: /v1/verify/bulk
+    name: Start bulk email verification
+    summary: Submit a JSON list of emails for asynchronous verification
+    input:
+      bodyType: json
+      body:
+        emails: {type: "array[string]", required: true, min: 1, max: 500000, example: ["dev@bounceban.com", "support@bounceban.com"]}
+        name: {type: string, required: false}
+        mode: {type: string, required: false, enum: [regular, deepverify], default: regular}
+        greylisting_bypass: {type: string, required: false, enum: [auto, speed, robust], default: auto}
+        disable_catchall_verify: {type: string, required: false, enum: ['0', '1'], default: '0'}
+        url: {type: string, required: false, note: "BYOK webhook URL for each verified email"}
+        url_finished: {type: string, required: false, note: "BYOK webhook URL for task completion"}
+      note: "BYOK only. Unknown results are refunded only when the task finishes. Recommended maximum is 500,000 emails."
+    test_request: {body: {emails: ["dev@bounceban.com"], name: "catalog-check"}}
+    cost:
+      type: per_result
+      value: 1
+      currency: credit
+      per: 1
+      unit: result
+      source: docs
+      source_url: https://bounceban.com/public/doc/api.html#tag/Bulk-Verification
+      checked: '2026-09-16'
+      confidence: documented
+      note: "One credit per final non-unknown result. Unknown results are refunded when the task finishes. BYOK is not metered by treg."
+    platform_blocked: "Final-result refunds and shared-key task ownership require durable task settlement; connect your own BounceBan key."
+    verified: '2026-09-16'
+    example_response: examples/bounceban.people.email.verify.bulk.json
+    docs_url: https://bounceban.com/public/doc/api.html#tag/Bulk-Verification
+
+  - id: bounceban.people.email.verify.bulk.status
+    kind: utility
+    domain: contacts
+    capability: people.email.verify.bulk.status
+    platform: people
+    scope: any_account
+    method: GET
+    path: /v1/verify/bulk/status
+    name: Get bulk verification status
+    summary: Read progress, result counts, and final credit usage for a bulk task
+    input:
+      queryParams:
+        id: {type: string, required: true, example: "sanitized-bulk-id"}
+    test_request: {queryParams: {id: "sanitized-bulk-id"}}
+    cost: &free_bulk_read {type: free, value: 0, currency: USD, unit: call, confidence: verified, note: "Live bulk task reads used no credits"}
+    platform_blocked: &bulk_ownership "Shared-key task ownership is not available; connect your own BounceBan key."
+    verified: '2026-09-16'
+    example_response: examples/bounceban.people.email.verify.bulk.status.json
+    docs_url: https://bounceban.com/public/doc/api.html#tag/Bulk-Verification
+
+  - id: bounceban.people.email.verify.bulk.emails
+    kind: utility
+    domain: contacts
+    capability: people.email.verify.bulk.emails
+    platform: people
+    scope: any_account
+    method: POST
+    path: /v1/verify/bulk/emails
+    name: Get selected bulk verification results
+    summary: Read results for up to 100 emails in a completed bulk task
+    input:
+      bodyType: json
+      body:
+        id: {type: string, required: true, example: "sanitized-bulk-id"}
+        emails: {type: "array[string]", required: true, min: 1, max: 100, example: ["dev@bounceban.com"]}
+    test_request: {body: {id: "sanitized-bulk-id", emails: ["dev@bounceban.com"]}}
+    cost: *free_bulk_read
+    platform_blocked: *bulk_ownership
+    verified: '2026-09-16'
+    example_response: examples/bounceban.people.email.verify.bulk.emails.json
+    docs_url: https://bounceban.com/public/doc/api.html#tag/Bulk-Verification
+
+  - id: bounceban.people.email.verify.bulk.dump
+    kind: utility
+    domain: contacts
+    capability: people.email.verify.bulk.dump
+    platform: people
+    scope: any_account
+    method: GET
+    path: /v1/verify/bulk/dump
+    name: List bulk verification results
+    summary: Read a cursor-paginated page of verified emails from a bulk task
+    input:
+      queryParams:
+        id: {type: string, required: true, example: "sanitized-bulk-id"}
+        state: {type: string, required: false, enum: [deliverable, risky, undeliverable, unknown]}
+        cursor: {type: string, required: false, note: "opaque cursor from the previous response"}
+        page_size: {type: integer, required: false, min: 100, max: 3000, default: 100}
+        retrieve_all: {type: string, required: false, enum: ['0', '1'], default: '0', note: "1 returns all rows only for tasks with at most 20,000 emails"}
+      note: "Request without cursor, then repeat with the returned cursor until it is null."
+    test_request: {queryParams: {id: "sanitized-bulk-id", page_size: 100}}
+    cost: *free_bulk_read
+    platform_blocked: *bulk_ownership
+    verified: '2026-09-16'
+    example_response: examples/bounceban.people.email.verify.bulk.dump.json
+    docs_url: https://bounceban.com/public/doc/api.html#tag/Bulk-Verification
+
+  - id: bounceban.people.email.verify.bulk.export
+    kind: utility
+    domain: contacts
+    capability: people.email.verify.bulk.export
+    platform: people
+    scope: any_account
+    method: POST
+    path: /v1/verify/bulk/export
+    name: Create a bulk-results download link
+    summary: Create a four-hour CSV download link for a completed bulk task
+    input:
+      bodyType: json
+      body:
+        id: {type: string, required: true, example: "sanitized-bulk-id"}
+        keep_all_rows: {type: boolean, required: false, default: false}
+        criteria: {type: object, required: false, note: "optional deliverable, risky, risky_score, undeliverable, unknown, free, role, accept_all, and disposable filters"}
+      note: "Link creation can take time. Retry no more than 15 times per export in 15 minutes. The returned public link expires after four hours."
+    test_request: {body: {id: "sanitized-bulk-id"}}
+    cost: {type: free, value: 0, currency: USD, unit: call, confidence: documented, note: "The documented export-link operation does not consume verification credits"}
+    platform_blocked: *bulk_ownership
+    example_response: examples/bounceban.people.email.verify.bulk.export.json
+    docs_url: https://bounceban.com/public/doc/api.html#tag/Bulk-Verification
+
+  - id: bounceban.account.usage
+    kind: account
+    domain: account
+    capability: account.usage
+    platform: account
+    scope: own_account
+    method: GET
+    path: /v1/account
+    name: Check verification-credit balance
+    summary: Get the account credit balance and live per-endpoint rate limits
+    input:
+      note: "No parameters. This free endpoint is also the connection probe and platform capacity source."
+    test_request: {queryParams: {}}
+    cost: {type: free, value: 0, currency: USD, unit: call, confidence: verified, note: "Live account probes used no credits"}
+    verified: '2026-09-16'
+    example_response: examples/bounceban.account.usage.json
+    docs_url: https://bounceban.com/public/doc/api.html#tag/Account

@@ -505,21 +505,27 @@ async def test_rotating_a_pinned_token_keeps_its_pin(clients: AsyncClient):
     assert r.json()["pinned_tags"] == {"customer": "cust_A"}
 
 
-async def test_a_team_can_lower_its_daily_cap_but_not_raise_it(clients: AsyncClient):
-    """Two masters: the team protects itself from a runaway agent, we protect ourselves from a
-    catalog mispricing. Lowering is theirs; raising past our ceiling is a conversation."""
+async def test_a_team_sets_its_daily_cap_in_either_direction(clients: AsyncClient):
+    """The limit is the team's own rail against a runaway agent: any figure, and 0 = no limit
+    (the deployment default). Nothing is clamped, nothing needs a word with us."""
     org_id = await _org_id(clients)
     settings = (await clients.get(f"/orgs/{org_id}/settings")).json()
-    ceiling = settings["platform_ceiling_micro"]
-    assert settings["daily_cap_micro"] == ceiling
+    assert settings["platform_default_micro"] == 0 and settings["daily_cap_micro"] == 0
+    assert settings["daily_cap_set_by_team"] is None
 
     lowered = await clients.patch(f"/orgs/{org_id}/settings", json={"daily_cap_micro": 1_000})
     assert lowered.status_code == 200 and lowered.json()["daily_cap_micro"] == 1_000
 
-    too_big = await clients.patch(f"/orgs/{org_id}/settings",
-                                  json={"daily_cap_micro": ceiling + 1})
-    assert too_big.status_code == 403
-    assert too_big.json()["detail"]["error"] == "above_platform_ceiling"
+    huge = await clients.patch(f"/orgs/{org_id}/settings",
+                               json={"daily_cap_micro": 5_000 * 1_000_000})
+    assert huge.status_code == 200 and huge.json()["daily_cap_micro"] == 5_000 * 1_000_000
+
+    off = await clients.patch(f"/orgs/{org_id}/settings", json={"daily_cap_micro": 0})
+    assert off.status_code == 200 and off.json()["daily_cap_micro"] == 0
+    assert off.json()["daily_cap_set_by_team"] is None
+
+    neg = await clients.patch(f"/orgs/{org_id}/settings", json={"daily_cap_micro": -1})
+    assert neg.status_code == 422
 
 
 async def test_the_team_cap_actually_refuses_spend(clients: AsyncClient, platform_on):

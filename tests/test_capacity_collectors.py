@@ -14,6 +14,82 @@ import httpx
 import pytest
 
 
+async def test_openmart_balance_collector_and_policy():
+    def probe(request):
+        assert request.method == "GET"
+        assert request.url.path == "/api/v2/credit-balance"
+        assert request.headers["authorization"] == "Bearer test"
+        return httpx.Response(200, json={
+            "balance": 4800,
+            "period_start": "2026-09-01T00:00:00Z",
+            "period_end": "2026-10-01T00:00:00Z",
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(probe)) as client:
+        row = await collectors._openmart(client, "test")
+    assert row == {
+        "value": 4800,
+        "unit": "credits",
+        "note": "Monthly subscription balance; current period ends 2026-10-01T00:00:00Z.",
+    }
+    capacity = policy.default_policy("openmart", has_key=True)
+    assert capacity.capacity_type == "credits"
+    assert capacity.funding_mode == "subscription"
+    assert capacity.rate_limit == {"limit": 15, "window_s": 1, "source": "docs"}
+
+
+@pytest.mark.parametrize("value,expected", [(0, 0), (71, 71), ("5000", 5000)])
+async def test_zerobounce_balance_accepts_nonnegative_integer_values(monkeypatch, value, expected):
+    monkeypatch.setenv("TREG_PLATFORM_KEY_ZEROBOUNCE", "private-test-key")
+    collectors.get_settings.cache_clear()
+
+    def reply(request):
+        assert request.url.path == "/v2/getcredits"
+        assert request.url.params["api_key"] == "private-test-key"
+        return httpx.Response(200, json={"Credits": value})
+
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+            row = await collectors.provider_balance("zerobounce", client)
+        assert row["value"] == expected
+        assert row["unit"] == "credits"
+        assert "manual" in row["note"]
+    finally:
+        collectors.get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("status,value", [
+    (200, -1), (200, "-1"), (200, True), (200, 12.5), (200, "12.5"), (200, "bad"),
+    (403, None),
+])
+async def test_zerobounce_balance_rejects_uncertain_values_without_exposing_key(
+    monkeypatch, status, value,
+):
+    monkeypatch.setenv("TREG_PLATFORM_KEY_ZEROBOUNCE", "private-test-key")
+    collectors.get_settings.cache_clear()
+
+    def reply(request):
+        return httpx.Response(status, json={"Credits": value}, request=request)
+
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+            row = await collectors.provider_balance("zerobounce", client)
+        assert row["value"] is None
+        assert row["note"]
+        assert "private-test-key" not in str(row)
+    finally:
+        collectors.get_settings.cache_clear()
+
+
+def test_zerobounce_capacity_policy_stays_manual_until_vendor_auto_pay_is_verified():
+    row = policy.default_policy("zerobounce", has_key=True)
+    assert row.capacity_type == "credits"
+    assert row.funding_mode == "manual"
+    assert row.source == "api"
+    assert row.auto_funding_enabled is False
+    assert row.rate_limit == {"limit": 25, "window_s": 1, "source": "policy"}
+
+
 @pytest.mark.parametrize("balance", [0, 465])
 async def test_millionverifier_balance_uses_query_key_without_double_counting(monkeypatch, balance):
     monkeypatch.setenv("TREG_PLATFORM_KEY_MILLIONVERIFIER", "private-test-key")
@@ -28,6 +104,76 @@ async def test_millionverifier_balance_uses_query_key_without_double_counting(mo
         assert row == {"provider": "millionverifier", "value": balance, "unit": "credits", "note": ""}
     finally:
         collectors.get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("balance", [0, 9997, 12.5])
+async def test_bounceban_balance_uses_raw_authorization_header(monkeypatch, balance):
+    monkeypatch.setenv("TREG_PLATFORM_KEY_BOUNCEBAN", "private-test-key")
+    collectors.get_settings.cache_clear()
+
+    def reply(request):
+        assert request.url == "https://api.bounceban.com/v1/account"
+        assert request.headers["authorization"] == "private-test-key"
+        return httpx.Response(200, json={
+            "owner_email": "owner@example.com",
+            "available_credits": balance,
+            "rate_limit": [],
+        })
+
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as client:
+            row = await collectors.provider_balance("bounceban", client)
+        assert row == {"provider": "bounceban", "value": balance,
+                       "unit": "verification credits", "note": ""}
+    finally:
+        collectors.get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("balance", [None, -1, True, "9997"])
+async def test_bounceban_balance_rejects_uncertain_values_without_exposing_key(monkeypatch, balance):
+    monkeypatch.setenv("TREG_PLATFORM_KEY_BOUNCEBAN", "private-test-key")
+    collectors.get_settings.cache_clear()
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"available_credits": balance}))) as client:
+            row = await collectors.provider_balance("bounceban", client)
+        assert row["value"] is None
+        assert "valid verification-credit balance" in row["note"]
+        assert "private-test-key" not in str(row)
+    finally:
+        collectors.get_settings.cache_clear()
+
+
+async def test_bounceban_balance_rejects_non_finite_value(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"available_credits": float("inf")}
+
+    class Client:
+        async def get(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setenv("TREG_PLATFORM_KEY_BOUNCEBAN", "private-test-key")
+    collectors.get_settings.cache_clear()
+    try:
+        row = await collectors.provider_balance("bounceban", Client())
+        assert row["value"] is None
+        assert "valid verification-credit balance" in row["note"]
+        assert "private-test-key" not in str(row)
+    finally:
+        collectors.get_settings.cache_clear()
+
+
+def test_bounceban_capacity_policy_uses_manual_prepaid_credits():
+    row = policy.default_policy("bounceban", has_key=True)
+    assert row.capacity_type == "credits"
+    assert row.funding_mode == "manual"
+    assert row.source == "api"
+    assert row.auto_funding_enabled is False
+    assert row.rate_limit == {"limit": 25, "window_s": 1, "source": "docs"}
 
 
 @pytest.mark.parametrize("status,body", [(200, {"error": "apikey_not_found"}), (401, {}), (200, {})])
@@ -168,14 +314,23 @@ async def test_akta_collector_marks_enterprise_accounts():
 
 def test_no_balance_api_includes_expected_providers():
     """Verify the vendors that have no free balance API are documented."""
-    expected = {"aviato", "coresignal", "exa", "financialdatasets", "finnhub", "justoneapi", "marketstack", "tiingo"}
+    expected = {"aviato", "coresignal", "exa", "financialdatasets", "finnhub", "justoneapi", "limadata", "marketstack", "scrubby", "tiingo"}
     assert expected == set(collectors.NO_BALANCE_API.keys())
+
+
+def test_limadata_policy_uses_auto_recharge_and_the_documented_rate():
+    row = policy.default_policy("limadata", has_key=True)
+    assert row.capacity_type == "credits"
+    assert row.funding_mode == "auto_recharge"
+    assert row.auto_funding_enabled is True
+    assert row.source == "manual"
+    assert row.rate_limit == {"limit": 1, "window_s": 1, "source": "docs"}
 
 
 def test_implemented_collectors_are_registered_and_do_not_overlap_absent_list():
     """A collector that parses a vendor must be on BALANCE_ROUTES, and a provider
     cannot be both 'we collect' and 'there is no balance API'."""
-    for provider in ("akta", "brightdata", "crustdata", "dropleads", "prospeo"):
+    for provider in ("aiark", "akta", "brightdata", "crustdata", "dropleads", "getleadsio", "prospeo", "wiza"):
         assert provider in collectors.BALANCE_ROUTES
         assert provider not in collectors.NO_BALANCE_API
     overlap = set(collectors.BALANCE_ROUTES.keys()) & set(collectors.NO_BALANCE_API.keys())
@@ -229,6 +384,58 @@ async def test_prospeo_balance_collector_uses_remaining_credits(remaining, expec
             assert row["value"] == expected
             assert row["unit"] == "credits"
             assert "plan STARTER" in row["note"]
+
+
+@pytest.mark.parametrize(
+    "remaining,expected",
+    [(15000, 15000), (0, 0), (15000.5, 15000.5), (-1, None), (True, None)],
+)
+async def test_aiark_balance_collector_uses_total(remaining, expected):
+    def serve(request):
+        assert request.url.path == "/api/developer-portal/v1/payments/credits"
+        assert request.headers["x-token"] == "test-key"
+        return httpx.Response(200, json={"total": remaining})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as upstream:
+        if expected is None:
+            with pytest.raises(ValueError):
+                await collectors._aiark(upstream, "test-key")
+        else:
+            row = await collectors._aiark(upstream, "test-key")
+            assert row["value"] == expected
+            assert row["unit"] == "credits"
+            assert "roll over" in row["note"]
+
+
+def test_aiark_policy_uses_subscription_and_documented_rate():
+    row = policy.default_policy("aiark", has_key=True)
+    assert row.capacity_type == "monthly_quota"
+    assert row.funding_mode == "quota_reset"
+    assert row.auto_funding_enabled is False
+    assert row.rate_limit == {"limit": 5, "window_s": 1, "source": "docs"}
+
+
+@pytest.mark.parametrize("remaining,expected", [(997, 997), (0, 0), (-1, None), (True, None)])
+async def test_getleadsio_balance_collector_uses_fair_use_credits(remaining, expected):
+    def serve(request):
+        assert request.url.path == "/api/v1/usage/fair-use"
+        assert request.headers["authorization"] == "Bearer test-key"
+        return httpx.Response(200, json={"ok": True, "credits_remaining": remaining})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as upstream:
+        if expected is None:
+            with pytest.raises(ValueError):
+                await collectors._getleadsio(upstream, "test-key")
+        else:
+            row = await collectors._getleadsio(upstream, "test-key")
+            assert row["value"] == expected
+            assert row["unit"] == "credits"
+            assert "Live Leads wallet is not included" in row["note"]
+
+
+def test_getleadsio_policy_uses_the_documented_default_rate():
+    row = policy.default_policy("getleadsio", has_key=True)
+    assert row.rate_limit == {"limit": 100, "window_s": 60, "source": "docs"}
 
 
 def test_prospeo_policy_smooths_at_the_stricter_shared_key_rate():

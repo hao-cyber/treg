@@ -409,6 +409,10 @@ validated before resolving the shared HTTP client. `/auth/logout` remains an HTT
   disappear from discovery, and return 410 on call/access checks. `platform_blocked` entries
   remain discoverable for BYOK but cannot use treg's key.
 
+  A platform access check normally estimates the default page size. Openmart is the provider-specific
+  exception: its runnable catalog example is priced with the same whole-credit request formula used
+  for reserve, so the pre-call estimate reflects that example's requested record count.
+
   Zero-result searches emit `SearchMiss` rows through the lossy audit queue. A team-pinned Default
   token provides the same human and team attribution as an older hash-backed membership token.
   Sources distinguish HTTP, team MCP and the Claude connector. Tool requests may attach a token
@@ -578,7 +582,8 @@ validated before resolving the shared HTTP client. `/auth/logout` remains an HTT
     cron remains the fallback. Polling itself is free and does not add Activity entries.
   - `GET /calls/{id}/result` joins the archive hashes to the request shape and stored response.
     `has_result` identifies archived rows; unavailable content returns `stored: false` and a
-    reason (own-key/tool, failure, recording off, expiry or hash-only storage).
+    reason (own tool or an own-key answer over the archive's cap, failure, recording off,
+    expiry or hash-only storage).
     Failure-evidence columns remain excluded. See [archive](../architecture/archive.md).
 
 - **OAuth connect + the provider marketplace:** `oauth_start` (`POST /oauth/start`) creates a
@@ -845,9 +850,10 @@ if returning the hold itself fails, the money comes back when the hold is reaped
 |---|---|
 | `GET /calls?days=&before_id=&limit=` | this team's calls, windowed and pageable. Analytics - **not** an invoice source |
 | `GET /calls/{call_ref}` | one call by its `X-Treg-Call-Id`, plus the ledger entries for it and its `async_task` view when it was a metered generation |
-| `GET /calls/{id}/result` | what one call asked and what came back - the archive's copy; metered platform 2xx only, `stored: false` + `note` otherwise |
+| `GET /calls/{id}/result` | what one call asked and what came back - the archive's copy; recorded catalog 2xx only (platform or own key), `stored: false` + `note` otherwise |
 | `GET /orgs/{id}/usage/by-tag?key=&days=` | per-value spend for one tag key. **Money from the ledger**; admin+ |
 | `GET/PUT/DELETE /orgs/{id}/budgets[/{dim}/{val}]` | per-tag limits and blocking; admin+ |
+| `PATCH /orgs/{id}` | (admin+) rename the team: `name` and/or `slug`; the old slug stays an alias so existing keys keep working |
 | `GET/PATCH /orgs/{id}/settings` | the team's daily spend cap, budget dimensions and primary dimension |
 
 `PUT /orgs/{id}/budgets/{dim}/{val}` is an upsert that leaves unsent fields alone - a PUT that only

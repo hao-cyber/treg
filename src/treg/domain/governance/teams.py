@@ -68,11 +68,42 @@ def _slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "org"
 
 
+async def _slug_taken(slug: str, db: AsyncSession) -> bool:
+    """Current slugs and retired ones alike: a retired slug still resolves for the team that had it."""
+    return (await db.execute(select(Org.id).where(
+        (Org.slug == slug) | (Org.previous_slug == slug)).limit(1))).first() is not None
+
+
 async def _unique_slug(base: str, db: AsyncSession) -> str:
     slug, i = base, 2
-    while (await db.execute(select(Org).where(Org.slug == slug))).scalar_one_or_none() is not None:
+    while await _slug_taken(slug, db):
         slug, i = f"{base}-{i}", i + 1
     return slug
+
+
+MAX_ORG_NAME = 80
+SLUG_LEN = (3, 40)
+
+
+async def rename_org(db: AsyncSession, org: Org, *, name: str | None = None, slug: str | None = None) -> None:
+    """Change a team's display name and/or slug. Caller commits.
+
+    A slug change retires the old slug into ``previous_slug`` so credentials pinned to it keep
+    working. Raises ValueError with a user-facing message on bad input or a taken slug."""
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ValueError("name must not be empty")
+        org.name = name[:MAX_ORG_NAME]
+    if slug is not None and slug != org.slug:
+        if slug != _slugify(slug) or not SLUG_LEN[0] <= len(slug) <= SLUG_LEN[1]:
+            raise ValueError(
+                f"slug must be {SLUG_LEN[0]}-{SLUG_LEN[1]} lowercase letters, digits or hyphens")
+        if slug.startswith("sbx-"):  # the sandbox-team shape (onboard/sandbox.py) is privilege-shaped
+            raise ValueError("slug prefix 'sbx-' is reserved")
+        if slug != org.previous_slug and await _slug_taken(slug, db):
+            raise ValueError("slug is taken")
+        org.previous_slug, org.slug = org.slug, slug
 
 
 async def _make_org_membership(

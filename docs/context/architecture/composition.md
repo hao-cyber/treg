@@ -63,7 +63,10 @@ from app state. This keeps one cache and one refresh Task per
 process even when HTTP and MCP search concurrently. The refresh Task starts lazily on a miss rather
 than appearing in the role's always-running background-task manifest. The lifespan still owns it:
 shutdown first unbinds it from MCP, then calls `aclose()`, which refuses new refreshes and cancels the
-shared Task before database and HTTP resources disappear.
+shared Task before database and HTTP resources disappear. Once the fault handler is installed the
+lifespan emits `analytics.capture_service_started(role)`, one `service_started` event per process
+carrying the `build` and `archive_config` fingerprints every server event has (see
+[data-model](data-model.md#product-analytics-writer-analyticspy)).
 
 `bootstrap_handlers.py` owns the app-wide pool-saturation and HTTP-exception adapters.
 `call_surface.split_call_path`

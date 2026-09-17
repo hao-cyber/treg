@@ -22,31 +22,41 @@ from .resolve import MarketplaceCall
 from .types import ReservationFailed
 
 
-async def _enforce_trial_allowance(caller: Caller, provider: str, db: AsyncSession) -> None:
+async def _enforce_trial_allowance(caller: Caller, provider: str, endpoint_id: str,
+                                   db: AsyncSession) -> None:
     """Per-team, per-UTC-day call allowance for TRIAL-POOL providers (fx.yaml `kind: treg_trial`).
 
     A trial provider is served on treg's own FREE-tier key at a $0 price, so the price gives no
     brake at all — one looping agent would drain the shared vendor quota for every team at once.
     The allowance is the brake, and it lives in the same fx entry as the zero (catalog.trial_pools).
 
-    Counted from audit rows: successful (2xx) calls only, because a failed call produced nothing —
-    the same line billability draws. `tool_name` is the endpoint id, so the provider is its prefix.
-    The audit is written fire-and-forget, so the count can lag a call or two under load; for a free
-    trial that slack is acceptable and bounded. Own-key (tier 2) calls never reach this check — a
-    team with its own key is never throttled by the trial it does not use.
+    Counted from audit rows: successful (2xx) platform calls whose catalog cost is not `free`.
+    A free discovery call consumes no vendor credit, so it neither checks nor consumes this paid-call
+    allowance. The audit is written fire-and-forget, so the count can lag a call or two under load;
+    for a free trial that slack is acceptable and bounded. Own-key (tier 2) calls never reach this
+    check — a team with its own key is never throttled by the trial it does not use.
 
     FAIL-CLOSED like the platform cap: the quota being protected is the shared vendor key, and
     serving blind when the count cannot be read is how the pool dies for everyone."""
-    allowance = catalog_store.load().trial_pools.get(provider)
+    catalog = catalog_store.load()
+    allowance = catalog.trial_pools.get(provider)
     if not allowance:
         return
+    endpoint = catalog.by_id.get(endpoint_id) or {}
+    if (endpoint.get("cost") or {}).get("type") == "free":
+        return
+    paid_endpoint_ids = [
+        ep["id"] for ep in catalog.for_provider(provider)
+        if (ep.get("cost") or {}).get("type") != "free"
+    ]
     day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0,
                                                    tzinfo=None)
     try:
         used = (await db.execute(
             select(func.count(CallRecord.id)).where(
                 CallRecord.org_id == caller.org_id,
-                CallRecord.tool_name.like(f"{provider}.%"),  # type: ignore[union-attr]
+                CallRecord.credential_tier == "platform",
+                CallRecord.tool_name.in_(paid_endpoint_ids),  # type: ignore[union-attr]
                 CallRecord.status_code >= 200, CallRecord.status_code < 300,
                 CallRecord.created_at >= day_start))).scalar_one()
     except Exception as exc:  # noqa: BLE001 — cannot verify the pool ⇒ do not drain it
@@ -72,6 +82,8 @@ async def _enforce_platform_daily_cap(caller: Caller, add_micro: int, db: AsyncS
     cannot answer refuses the call. The cap is the blast radius of a runaway agent (and of a pricing
     mistake in the catalog) — the balance alone is not enough, because auto-top-up can refill it."""
     cap = budget_policy._effective_daily_cap(caller.org)
+    if cap <= 0:  # no limit applies: the balance (and the auto-top-up monthly cap) is the bound
+        return
     try:
         spent = await ledger.spent_today(db, caller.org_id)
     except Exception as exc:  # noqa: BLE001 — cannot verify the ceiling ⇒ do not spend
@@ -227,7 +239,7 @@ async def _platform_reserve(mk: MarketplaceCall, caller: Caller, meta: CallMeta 
             # must not surface as the team-wide balance error, which names the builder's private numbers.
             await _enforce_tag_budgets(caller, meta, db, add_micro=mk.estimate_micro)
             await _enforce_platform_daily_cap(caller, mk.estimate_micro, db)
-            await _enforce_trial_allowance(caller, mk.provider, db)
+            await _enforce_trial_allowance(caller, mk.provider, mk.endpoint_id, db)
             try:
                 mk.call_id = await ledger.reserve_in_transaction(
                     db, caller.org_id, mk.endpoint_id, mk.estimate_micro,

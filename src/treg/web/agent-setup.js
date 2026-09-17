@@ -46,11 +46,16 @@
       <p class="sub" style="font-size:12px;margin:12px 0 0">{{team&&token ? (agent.plugin?'Your Bot reads that file and signs in with your team & token — then it can call every tool in the catalog.':'Your agent reads that file and signs in with your team & token — it installs the CLI and starts calling tools.') : 'Your agent reads that file, installs the CLI and guides you through signing in.'}}</p>
     </div>`
   };
+  // `prompt` is what the copy button puts on the clipboard; `show` is the shorter line on the card.
+  // Order follows how often each card is copied and how many teams call the underlying tools.
   const examples=[
       {k:'trend',cat:'Trending videos pattern', logo:'tiktok',  prompt:'Use treg to pull today\'s trending TikTok videos (video links included)'},
       {k:'enr',  cat:'Get contact emails',      logo:'people', avatar:'https://pbs.twimg.com/profile_images/1131851609774985216/OcsssQ9J_400x400.png', prompt:'Use treg to find the work email of Peter Steinberger'},
-      {k:'serp', cat:'Keyword volume',          logo:'google',  prompt:'Use treg to pull real monthly search volume and top related keywords worth targeting for my business'},
+      {k:'ugc',  cat:'Make UGC videos',         logo:'seedance',  show:'Use treg to make AI UGC videos for my product, from trending hooks to finished clips',
+        prompt:'Read '+location.origin+'/skills/ugc/SKILL.md and follow it with treg to make UGC videos for my product: pull the trending TikTok and Instagram videos in my vertical, extract the hook patterns, create a character with the same vibe as a presenter I pick, generate 3-5 talking-head hook clips on Seedance 2.5, and add captions. Ask me for the product and vertical first.'},
       {k:'soc',  cat:'Scrape linkedin',         logo:'linkedin',prompt:'Use treg to look up linkedin.com/in/jasonzhoudesign'},
+      {k:'posts',cat:'LinkedIn posts',          logo:'linkedin',prompt:'Use treg to pull the latest LinkedIn posts from linkedin.com/in/jasonzhoudesign and summarise what they talk about'},
+      {k:'serp', cat:'Keyword volume',          logo:'google',  prompt:'Use treg to pull real monthly search volume and top related keywords worth targeting for my business'},
     ];
   const oauthGroups=[
       {label:'Post on social',      items:[{s:'x',n:'X (Twitter)'},{s:'youtube',n:'YouTube'},{s:'tiktok',n:'TikTok'},{s:'linkedin',n:'LinkedIn'},{s:'facebook',n:'Facebook Pages'},{s:'instagram',n:'Instagram'}],
@@ -67,7 +72,7 @@
             <div class="try-grid">
               <button v-for="ex in examples" :key="ex.k" type="button" class="try-card" @click="$emit('example',ex)">
                 <span class="try-cat"><span style="display:inline-flex;align-items:center;gap:7px"><img class="try-ico" :src="'/logos/platforms/'+ex.logo+'.svg'" alt=""/><img v-if="ex.avatar" class="try-ico avatar" :src="ex.avatar" alt=""/>{{ex.cat}}</span><span class="try-copy" :class="{done:copied===ex.k}">{{copied===ex.k ? '✓ copied' : '⧉ copy'}}</span></span>
-                <span class="try-txt">{{ex.prompt}}</span>
+                <span class="try-txt">{{ex.show||ex.prompt}}</span>
               </button>
             </div>
             <div class="oauth-div"><span>also connect OAuth to unlock new agent capabilities</span></div>

@@ -46,6 +46,7 @@ async def test_every_marketing_surface_loads_the_analytics_script(clients: Async
         "/",
         "/resources",
         "/people-search",
+        "/ugc",
         "/grokbot",
         "/fable",
         "/gpt6",

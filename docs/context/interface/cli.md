@@ -80,7 +80,8 @@ emit raw JSON instead — one stable contract for agents; commands that already 
 `~/.treg/config.json`). `org use` validates the slug against `/orgs`, then gets that membership's
 active Default key before it saves either value. If that exchange fails, the previous team and token
 stay active. An Additional or Agent key cannot switch memberships; the user must first run `treg
-login` as a human. The server's "choose an org" 400 is followed by a stderr line naming the bad
+login` as a human. `org rename --name/--slug` sends `PATCH /orgs/{id}` (admin+); on a slug change it
+rewrites `active_org` and leaves the token alone, since the server keeps the old slug as an alias. The server's "choose an org" 400 is followed by a stderr line naming the bad
 `--org`/active-org value.
 
 Every command builds its client via `_client(cfg)`, which returns a `_RegistryClient` (an

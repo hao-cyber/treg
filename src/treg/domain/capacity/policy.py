@@ -35,7 +35,14 @@ _KNOWN: dict[str, tuple[str, str, str]] = {
     "hunter": ("monthly_quota", "quota_reset", "api"),
     "quickenrich": ("monthly_quota", "quota_reset", "api"),
     "prospeo": ("monthly_quota", "quota_reset", "api"),
+    "aiark": ("monthly_quota", "quota_reset", "api"),
+    "wiza": ("credits", "manual", "api"),
+    "limadata": ("credits", "auto_recharge", "manual"),
+    "getleadsio": ("credits", "manual", "api"),
     "sumble": ("monthly_quota", "quota_reset", "api"),
+    "moltsets": ("rolling_quota", "subscription", "api"),
+    "openmart": ("credits", "subscription", "api"),
+    "scrubby": ("credits", "manual", "manual"),
     "predictleads": ("monthly_quota", "quota_reset", "api"),
     "companyenrich": ("credits", "manual", "api"),
     "apollo": ("credits", "manual", "api"),
@@ -55,6 +62,10 @@ _KNOWN: dict[str, tuple[str, str, str]] = {
     "apify": ("cash", "manual", "api"),
     "twelvedata": ("requests", "subscription", "api"),
     "financialdatasets": ("credits", "auto_recharge", "manual"),
+    "bounceban": ("credits", "manual", "api"),
+    # The free API reports only the current balance, not whether vendor Auto-Pay is enabled.
+    # Treat replenishment as manual until that account setting is explicitly verified.
+    "zerobounce": ("credits", "manual", "api"),
     # Neither aggregator exposes a balance endpoint at its documented path (plan §7).
     "overflow:orthogonal": ("cash", "manual", "manual"),
     "overflow:monid": ("cash", "manual", "manual"),
@@ -66,16 +77,39 @@ _QUOTAS: dict[str, dict] = {
     "hunter": {"limit": None, "period": "billing", "resets_at_rule": "account.reset_date"},
     "quickenrich": {"limit": None, "period": "billing", "resets_at_rule": "subscription renewal; no reset timestamp in API"},
     "prospeo": {"limit": None, "period": "billing", "resets_at_rule": "account.next_quota_renewal_date"},
+    "aiark": {"limit": 15000, "period": "billing", "resets_at_rule": "monthly subscription; date not reported by API"},
 }
 _RATE_LIMITS: dict[str, dict] = {
+    # The only platform-served tool is standard single verification, documented at 100/s. Keep
+    # the shared key at one quarter of that allowance; BYOK calls bypass this limiter.
+    "bounceban": {"limit": 25, "window_s": 1, "source": "docs"},
+    # The public allowance is far higher; keep a conservative shared-key pace.
+    "zerobounce": {"limit": 25, "window_s": 1, "source": "policy"},
     # One shared key serves both 5/s enrichment and 1/s search routes. Until smoothing becomes
     # endpoint-aware, protect the stricter search allowance and accept conservative enrichment.
     "prospeo": {"limit": 1, "window_s": 1, "source": "docs"},
+    "aiark": {"limit": 5, "window_s": 1, "source": "docs"},
+    # Provisional: Wiza publishes 30/min for company enrichment, but not for search or autocomplete.
+    # Reuse that ceiling provider-wide because smoothing is not endpoint-aware yet. This spaces
+    # sequential platform calls by about 2s; the limiter's bounded wait is not a strict quota gate.
+    # Relax this after real 429 evidence, or when smoothing can vary by endpoint. BYOK bypasses it.
+    "wiza": {"limit": 30, "window_s": 60, "source": "docs"},
+    # The Basic v2 docs set a shared one-request/second default. Several routes are exempt, but
+    # provider-wide smoothing cannot express that difference, so shared-key service stays at 1/s.
+    "limadata": {"limit": 1, "window_s": 1, "source": "docs"},
+    # Routing-friendly shared-key pace. The 5,000-request/5h rolling allowance is capacity, not a
+    # burst rate; encoding it here would make the spacer add 3.6s before every routed attempt.
+    "moltsets": {"limit": 10, "window_s": 1, "source": "policy"},
+    # The provider publishes 15-25 requests/s by endpoint family. Use the strictest ceiling while
+    # smoothing remains provider-wide. All direct tools are BYOK-only today.
+    "openmart": {"limit": 15, "window_s": 1, "source": "docs"},
     "sumble": {"limit": 10, "window_s": 1, "source": "docs"},
+    "scrubby": {"limit": 25, "window_s": 1, "source": "docs"},
     "leadsforge": {"limit": 120, "window_s": 60, "source": "headers"},
     "leadmagic": {"limit": 300, "window_s": 60, "source": "docs"},
     "crustdata": {"limit": 30, "window_s": 60, "source": "headers"},
     "tikhub": {"limit": 30, "window_s": 1, "source": "docs"},
+    "getleadsio": {"limit": 100, "window_s": 60, "source": "docs"},
 }
 
 

@@ -14,6 +14,8 @@ limits: 'Search/phone/reverse: 1000 rpm; domain: 300 rpm; contact/company finder
 pricing_url: https://quickenrich.io/
 endpoints:
 - id: quickenrich.people.email.find
+  cache:
+    ignore_paths: ["meta"]
   capability: people.email.find
   platform: people
   scope: any_account
@@ -61,6 +63,8 @@ endpoints:
   verified: '2026-09-08'
   example_response: examples/quickenrich.people.email.find.json
 - id: quickenrich.people.phone.find
+  cache:
+    ignore_paths: ["meta"]
   capability: people.phone.find
   platform: people
   scope: any_account

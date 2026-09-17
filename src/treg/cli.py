@@ -4655,6 +4655,28 @@ def cmd_org_delete(args, cfg) -> None:
     _show(r)
 
 
+def cmd_org_rename(args, cfg) -> None:
+    if not args.name and not args.slug:
+        sys.exit("nothing to change: pass --name and/or --slug")
+    body = {k: v for k, v in (("name", args.name), ("slug", args.slug)) if v}
+    with _client(cfg) as c:
+        org_id = _active_org_id(cfg, c)
+        if org_id is None:
+            sys.exit("no active org")
+        r = c.patch(f"/orgs/{org_id}", json=body)
+    if r.status_code == 200 and not _JSON_OVERRIDE:
+        o = r.json()
+        # The server keeps the old slug as an alias, so the pinned token stays valid; only the
+        # local active_org needs to follow the rename.
+        if o.get("previous_slug") and cfg.get("active_org") == o["previous_slug"]:
+            cfg["active_org"] = o["org"]
+            _save_config(cfg)
+        print(f"team: {o['name']}  slug: {o['org']}"
+              + (f"  (was {o['previous_slug']}; existing keys keep working)" if o.get("previous_slug") else ""))
+        return
+    _show(r)
+
+
 # ---- super-admin --------------------------------------------------------------------------
 def cmd_admin_login(args, cfg) -> None:
     cfg["admin_token"] = args.token
@@ -5837,6 +5859,10 @@ def build_parser() -> argparse.ArgumentParser:
     mk(og, "leave", "Remove yourself from the active team.", "treg org leave").set_defaults(fn=cmd_org_leave)
     od = mk(og, "delete", "Delete a team you own (confirms by name).", "treg org delete superdesign")
     od.add_argument("slug", help="the org slug to delete"); od.set_defaults(fn=cmd_org_delete)
+    orn = mk(og, "rename", "Rename the active team and/or change its slug (admin+). Existing keys keep working.",
+             'treg org rename --name "Superdesign"', "treg org rename --slug superdesign")
+    orn.add_argument("--name", help="new display name"); orn.add_argument("--slug", help="new slug (lowercase letters, digits, hyphens)")
+    orn.set_defaults(fn=cmd_org_rename)
 
     # ---- secrets ----
     s = mk(sub, "secret", "Manage stored credentials (encrypted server-side, never returned).",

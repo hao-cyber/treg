@@ -288,6 +288,8 @@ endpoints:
     docs_url: https://api-doc.icypeas.com/reverse-email-lookup
 
   - id: icypeas.people.search
+    cache:
+      ignore_paths: ["pagination.token"]
     domain: contacts
     capability: people.search
     platform: people

@@ -144,6 +144,8 @@ endpoints:
     docs_url: https://docs.exa.ai/reference/search
 
   - id: exa.companies.search
+    cache:
+      ignore_paths: ["requestId"]
     domain: companies
     capability: companies.search
     platform: companies

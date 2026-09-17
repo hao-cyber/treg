@@ -5822,8 +5822,9 @@ endpoints:
       date_posted:
         type: string
         required: false
-        note: Date posted
-        example: last-hour
+        enum: [last-week, last-month, last-year]
+        note: Google-indexed date window (last-week, last-month, last-year). Hour/day windows are not supported; Google does not index Instagram reels reliably enough in those windows.
+        example: last-week
       page:
         type: number
         required: false

@@ -36,7 +36,34 @@ related:
 
 # Auth & secrets
 
+`LIMADATA` uses a pasted raw `x-api-key` header. Its free connection probe sends an invalid empty
+web-search body: the assigned key returns HTTP 400 and a bogus key returns 401. The real local
+connection flow accepted the former and rejected the latter. `TREG_PLATFORM_KEY_LIMADATA` is the
+separate optional shared binding; a team's key still wins and remains unmetered. See
+[LimaData](limadata.md).
+
+BounceBan uses a pasted raw `Authorization` header with no `Bearer` prefix. The free
+`GET /v1/account` probe rejected a bogus key with HTTP 401 and accepted the supplied key with HTTP
+200 through the real connection flow. `TREG_PLATFORM_KEY_BOUNCEBAN` supplies the optional shared
+binding; a team's key still wins and remains unmetered. Provisioning includes the standard API tool
+and its explicit waterfall-host companion without exposing the credential. See
+[BounceBan](bounceban.md).
+
+ZeroBounce uses the standard pasted-key flow with an `api_key` query parameter. Its free usage
+probe rejects bad keys with HTTP 403 and accepts the supplied key with HTTP 200. The probe does not
+use the balance route because that route can answer a bad key with HTTP 200 and `Credits=-1`.
+`TREG_PLATFORM_KEY_ZEROBOUNCE` supplies the optional shared binding; a team's key still wins and
+remains unmetered. See [ZeroBounce](zerobounce.md).
+
+`MOLTSETS` is a pasted Bearer-key provider whose free `POST /get_account` probe validates both team
+and optional platform credentials. The existing own-key-first ladder and deployment allow-list apply;
+see [MoltSets](moltsets.md).
+
 `SUMBLE` uses the standard pasted Bearer-key path and a free technology-search miss probe; garbage-key rejection was verified through the local connection API. See [Sumble](sumble.md).
+
+`GETLEADSIO` uses the standard pasted Bearer-key path at `app.getleads.io`. Its free fair-use probe
+rejects bad keys with 401 and accepts a valid zero-credit account. The same route supplies capacity
+data; it is not a public catalog tool. See [GetLeads.io](getleadsio.md).
 
 Financial Datasets uses the standard pasted-key and platform-key paths with a raw `X-API-KEY`
 header. `OAuthProvider.probe_url` points at the smallest practical price-snapshot request and
@@ -331,7 +358,9 @@ module symbols:
   `token_ok_field`==`token_ok_value` match (Majestic's `Code`=="OK"), a `token_reject_field` present
   (Serpstat's `error`), or an `ERROR`-prefixed text body (Semrush). The connect probe may be a POST with a
   `probe_json` body (Serpstat's JSON-RPC), and `token_encode="base64"` turns a pasted `login:password` into
-  the Basic blob for `Basic {secret}` (DataForSEO, Moz). `can_autoprovision` (has a `base_url` and either needs no
+  the Basic blob for `Basic {secret}` (DataForSEO, Moz). The binding carries `token_encode` too, and the
+  injector's `ensure_base64` re-applies the same already-encoded check at call time, so a raw pair stored by
+  `treg secret add <provider>` (which never runs the connect probe) renders the same header. `can_autoprovision` (has a `base_url` and either needs no
   second credential or treg holds it) drives auto-building a callable tool on a successful connect;
   `needs_extra_credential` covers a second header the primary slot can't carry: Google Ads'
   `developer-token` (treg-held, via `extra_credential_setting`) and Tomba's per-user `X-Tomba-Secret`

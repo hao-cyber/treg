@@ -136,7 +136,7 @@ endpoints:
         workplaceType: {type: "array[string]", required: false, note: "Remote / Hybrid / On-site"}
         employmentType: {type: "array[string]", required: false, note: "Full-time / Part-time / Contract"}
         experienceLevel: {type: "array[string]", required: false, note: "Entry / Mid / Senior"}
-        postedLimit: {type: string, required: false, note: "Past hour / Past 24 hours / Past week / Past month"}
+        postedLimit: {type: string, required: false, note: "allowed values: 1h | 24h | week | month — labels like 'Past hour' are rejected", example: "24h"}
         sortBy: {type: string, required: false, note: "date | relevance"}
         maxItems: {type: integer, required: false, note: "jobs per query; 0 means every available page (LinkedIn caps at 40 pages ≈ 1,000). Pair with the query-string maxItems, which is the enforced ceiling", example: 25}
         page: {type: integer, required: false, note: "starting page, 25 jobs per page"}

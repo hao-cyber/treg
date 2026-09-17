@@ -25,7 +25,9 @@ from treg.domain.capacity.view import view as capacity_view
 from treg.models import Hold, LedgerEntry
 from treg.timeutil import utcnow_naive
 
-from test_marketplace_call import EP, EP_MICRO, PLATFORM_KEYS, _balance, _fake_relay, platform_on  # noqa: F401
+from test_marketplace_call import (  # noqa: F401
+    EP, EP_MICRO, PLATFORM_KEYS, _balance, _fake_relay, getleadsio_trial_on, platform_on,
+)
 
 OUT = b'{"detail":"Insufficient balance"}'  # matches the bare-402 balance signature
 
@@ -98,6 +100,27 @@ async def test_own_key_is_never_affected_by_an_exhausted_platform_account(client
     r = await clients.get(f"/call/{EP}?aweme_id=7")
     assert r.status_code == 200, r.text
     assert r.json()["auth"] == "Bearer MKKEY"
+
+
+async def test_getleadsio_zero_capacity_is_clear_and_byok_still_works(
+        clients: AsyncClient, getleadsio_trial_on):
+    await _publish("getleadsio", exhausted=True)
+    before = await _balance(clients)
+    body = {"filters": {"domains": ["example.com"]}, "limit": 1}
+
+    refused = await clients.post("/call/getleadsio.people.search", json=body)
+    assert refused.status_code == 503, refused.text
+    detail = refused.json()["detail"]
+    assert detail["error"] == "provider_capacity_unavailable"
+    assert detail["provider"] == "getleadsio"
+    assert "own key" in detail["message"]
+    assert await _balance(clients) == before
+    assert await _rows(Hold) == []
+
+    await clients.post("/secrets", json={"name": "getleadsio", "value": "OWN-GETLEADSIO"})
+    own = await clients.post("/call/getleadsio.people.search", json=body)
+    assert own.status_code == 200, own.text
+    assert own.json()["auth"] == "Bearer OWN-GETLEADSIO"
 
 
 async def test_a_stale_or_ok_view_never_refuses(clients: AsyncClient, platform_on, monkeypatch):

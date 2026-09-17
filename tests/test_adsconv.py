@@ -723,6 +723,7 @@ async def test_every_public_landing_surface_loads_the_capture_script(clients):
         "/",
         "/resources",
         "/people-search",
+        "/ugc",
         "/grokbot",
         "/fable",
         "/use-cases/seo-data-for-ai-agents",

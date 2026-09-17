@@ -1,7 +1,7 @@
 """The injector contract — the seam that keeps the proxy core dumb.
 
 A tool carries a LIST of bindings; the proxy applies each. A binding is a plain dict:
-    {secret_id, injector, location: "header"|"query", name, format, secret_field}
+    {secret_id, injector, location: "header"|"query", name, format, secret_field, token_encode}
 The proxy never branches on auth shape — it calls INJECTORS[binding["injector"]] per binding.
 Underneath there are two mechanics: place a string (env, cli_auth) or pull a field from a
 JSON blob (secret_file, oauth). Acquisition (CLI keychain / OAuth handshake / token file) is
@@ -10,6 +10,7 @@ onboarding's job. Adding a shape never touches the proxy.
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Callable
 
@@ -27,6 +28,26 @@ def register(name: str) -> Callable[[Injector], Injector]:
     return deco
 
 
+def ensure_base64(value: str) -> str:
+    """Ensure a value is Base64-encoded for HTTP Basic auth.
+
+    HTTP Basic providers (DataForSEO, Moz, PredictLeads) expect `login:password` Base64-encoded.
+    The marketplace connect flow (`connect.test_api_credential`) Base64-encodes at paste time, so
+    secrets added that way are already encoded. But `treg secret add <provider>` stores raw values.
+
+    Detect already-encoded values the same way connect.py does: if the value decodes to printable
+    text containing a colon, it is already Base64. A raw `login:password` cannot be mistaken for
+    one (colon is not in the Base64 alphabet), and a Base64 blob cannot be a raw pair (no colon).
+    """
+    try:
+        decoded = base64.b64decode(value, validate=True).decode()
+        if ":" in decoded and decoded.isprintable():
+            return value  # already Base64-encoded
+    except Exception:  # noqa: BLE001 — not Base64 or not text: encode it
+        pass
+    return base64.b64encode(value.encode()).decode()
+
+
 def _place(headers, params: list, binding: dict, value: str) -> None:
     """Put `value` where the binding declares. `headers` is a mapping that overwrites by name
     (dict or httpx.Headers); `params` is a list of (k, v) pairs (preserves duplicate caller
@@ -35,7 +56,13 @@ def _place(headers, params: list, binding: dict, value: str) -> None:
     # A pasted credential often carries the paste's trailing newline (echo/pbpaste both add one).
     # A newline is ILLEGAL in a header value, so httpx dies with an opaque 502 at call time —
     # sometimes months after the paste. Surrounding whitespace is never part of a real credential.
-    rendered = binding.get("format", "{secret}").format(secret=value.strip())
+    cleaned = value.strip()
+    # HTTP Basic providers declare `token_encode: "base64"`. Secrets added via the marketplace
+    # connect flow are already encoded; secrets added via `treg secret add` are raw. Encode now
+    # if needed, so both paths produce the same Authorization header.
+    if binding.get("token_encode") == "base64":
+        cleaned = ensure_base64(cleaned)
+    rendered = binding.get("format", "{secret}").format(secret=cleaned)
     name = binding.get("name", "Authorization")
     if binding.get("location", "header") == "query":
         params[:] = [(k, v) for (k, v) in params if k != name]

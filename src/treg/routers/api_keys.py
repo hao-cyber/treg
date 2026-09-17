@@ -50,10 +50,13 @@ async def _key(org_id: int, key_id: int, db: AsyncSession, caller: Caller) -> Ap
     return row
 
 
-def _agent_display_name(identity: str, org_slug: str) -> str:
+def _agent_display_name(identity: str, org_slug: str, previous_slug: str | None = None) -> str:
     local = identity.split("@", 1)[0]
-    prefix = f"agent-{org_slug}-"
-    return local[len(prefix):] if local.startswith(prefix) else local
+    for slug in (org_slug, previous_slug):  # agents minted before a rename carry the old slug
+        prefix = f"agent-{slug}-"
+        if slug and local.startswith(prefix):
+            return local[len(prefix):]
+    return local
 
 
 def _view(
@@ -166,7 +169,7 @@ async def list_api_keys(
         user = users.get(membership.user_id) if membership else None
         assigned_name = row.identity_label
         if row.kind == managed.AGENT_KIND and org is not None:
-            assigned_name = _agent_display_name(row.identity_label, org.slug)
+            assigned_name = _agent_display_name(row.identity_label, org.slug, org.previous_slug)
         safe_prefix = row.safe_prefix
         if row.kind == managed.DEFAULT_KIND and user is not None and org is not None:
             safe_prefix = identity_session.make_identity(

@@ -1,0 +1,12 @@
+{
+  "id": "sanitized-bulk-id",
+  "status": "finished",
+  "total_count": 1,
+  "deliverable_count": 1,
+  "undeliverable_count": 0,
+  "risky_count": 0,
+  "unknown_count": 1,
+  "catchall_count": 1,
+  "credits_consumed": 1,
+  "credits_remaining": 9998
+}

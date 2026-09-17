@@ -215,8 +215,9 @@ the private [database-capacity runbook](https://github.com/superdesigndev/treg-i
 Several settings alter optional shared-service behavior without changing the underlying public
 contract:
 
-- `TREG_PLATFORM_DAILY_CAP_USD` bounds a team's per-UTC-day shared-provider spend. The effective cap
-  is the lower of this deployment ceiling and the team's own setting.
+- `TREG_PLATFORM_DAILY_CAP_USD` is the default per-UTC-day shared-provider spend limit for a team
+  that has not set its own; 0 (the default) is no limit. A team's own setting wins in either
+  direction.
 - `TREG_OAUTH_BILLED_PROVIDERS` names OAuth providers whose upstream bill lands on the registry
   operator. Own-app connections are never metered by this switch.
 - `TREG_ROUTED_DISCOVERY` controls whether discovery leads callers to routed capability tools. It

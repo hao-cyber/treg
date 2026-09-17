@@ -29,7 +29,7 @@ async def test_well_known_skills_index_advertises_the_skill(clients):
     r = await clients.get("/.well-known/skills/index.json")
     assert r.status_code == 200
     skills = r.json()["skills"]
-    assert len(skills) == 1
+    assert [s["name"] for s in skills] == ["treg", "make-ugc"]
     entry = skills[0]
     assert entry["name"] == "treg"
     assert entry["files"] == ["SKILL.md"]
@@ -53,6 +53,18 @@ async def test_well_known_index_description_is_not_a_second_copy(clients):
     served = await clients.get("/skill.md")
     description = idx.json()["skills"][0]["description"]
     assert f"description: {description}" in served.text
+
+
+async def test_make_ugc_skill_is_served_and_advertised(clients):
+    """The /ugc workflow as a skill: one public URL an agent can be pointed at, the same file the
+    well-known index promises, templated to the serving host like the core skill."""
+    r = await clients.get("/skills/ugc/SKILL.md")
+    assert r.status_code == 200 and r.text.startswith("---\nname: make-ugc")
+    assert "{BASE}" not in r.text
+    wk = await clients.get("/.well-known/skills/make-ugc/SKILL.md")
+    assert wk.text == r.text
+    idx = (await clients.get("/.well-known/skills/index.json")).json()["skills"][1]
+    assert f"description: {idx['description']}" in r.text
 
 
 def test_install_sh_installs_the_skill():

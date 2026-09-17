@@ -1,0 +1,151 @@
+# Scrubby documents five POST endpoints. Single verification is synchronous; quick and deep bulk
+# verification use separate submit/fetch pairs. Bulk submissions stay BYOK-only because Scrubby's
+# request field is a singular `email` array with no documented maximum; treg cannot bound a shared-
+# key reservation without rewriting the request or inventing a limit. Fetches are free and ownership-
+# checked. Single verification is safe for platform access and settles from `credits_used`.
+provider: scrubby
+source:
+  docs: https://docs.scrubby.io/
+  openapi: https://docs.scrubby.io/scrubby-openapi.json
+  curated: '2026-09-16'
+pricing_url: https://scrubby.io/pricing/
+limits: 25 requests/second (1,500/minute) per API key. Quick bulk normally completes in 30-60 seconds; deep verification returns first results in 24 hours and final results in 72 hours.
+proposed_capabilities:
+  people.email.verify.bulk: Submit quick bulk email verification
+  people.email.verify.bulk.results: Fetch quick bulk verification results
+  people.email.verify.deep: Submit 72-hour deep email verification
+  people.email.verify.deep.results: Fetch deep verification results
+endpoints:
+  - id: scrubby.people.email.verify
+    domain: contacts
+    capability: people.email.verify
+    platform: people
+    scope: any_account
+    method: POST
+    path: /validate_email
+    name: Verify an email address
+    summary: Verify one email address synchronously.
+    input:
+      bodyType: json
+      body:
+        email: {type: string, required: true, format: email, example: info@scrubby.io}
+      note: A fresh verification can take about two minutes. Retrying the exact address within 24 hours returns the cached result without another credit. Scrubby support confirmed that client-side timeouts do not auto-refund.
+    test_request: {body: {email: info@scrubby.io}}
+    cost:
+      type: per_success
+      value: 1
+      currency: credit
+      per: 1
+      unit: call
+      source: observed
+      source_url: https://scrubby.io/pricing/
+      checked: '2026-09-16'
+      confidence: verified
+      note: One credit for a fresh verification. The response's credits_used is authoritative, including zero for a cached retry within 24 hours.
+    verified: '2026-09-16'
+    example_response: examples/scrubby.people.email.verify.json
+    docs_url: https://docs.scrubby.io/
+
+  - id: scrubby.people.email.verify.bulk
+    domain: contacts
+    capability: people.email.verify.bulk
+    platform: people
+    scope: any_account
+    method: POST
+    path: /validate_bulk_emails
+    name: Submit quick bulk email verification
+    summary: Queue a list for quick verification and receive a batch identifier.
+    platform_blocked: "Shared-key bulk reservation and body-carried task ownership are unavailable; connect your own Scrubby key."
+    input:
+      bodyType: json
+      body:
+        email: {type: "array[string]", required: true, min: 1, example: [info@scrubby.io, support@scrubby.io]}
+      note: Save identifier, wait retry_after_seconds, then call scrubby.people.email.verify.bulk.results. BYOK-only because the provider publishes no batch maximum.
+    test_request: {body: {email: [info@scrubby.io]}}
+    cost:
+      type: per_result
+      value: 1
+      currency: credit
+      per: 1
+      unit: record
+      source: observed
+      source_url: https://scrubby.io/pricing/
+      checked: '2026-09-16'
+      confidence: verified
+      note: One credit per fresh address submitted; credits_used reports the exact batch charge, including cached zero-cost addresses.
+    verified: '2026-09-16'
+    example_response: examples/scrubby.people.email.verify.bulk.json
+    docs_url: https://docs.scrubby.io/
+
+  - id: scrubby.people.email.verify.bulk.results
+    kind: utility
+    capability: people.email.verify.bulk.results
+    platform: people
+    scope: any_account
+    method: POST
+    path: /fetch_bulk_results
+    name: Fetch quick bulk verification results
+    summary: Poll a quick-verification batch until status is completed.
+    platform_blocked: "Shared-key body-carried task ownership is unavailable; connect your own Scrubby key."
+    input:
+      bodyType: json
+      body:
+        identifier: {type: string, required: true, example: batch_sample_a1b2c3d4}
+      note: Poll after retry_after_seconds. Stop when status is completed.
+    test_request: {body: {identifier: batch_sample_a1b2c3d4}}
+    cost: {type: free, value: 0, currency: USD, unit: call, source: docs, source_url: https://docs.scrubby.io/, checked: '2026-09-16', confidence: documented, note: Scrubby prices verification when the batch is submitted; result polling reports no charge field.}
+    verified: '2026-09-16'
+    example_response: examples/scrubby.people.email.verify.bulk.results.json
+    docs_url: https://docs.scrubby.io/
+
+  - id: scrubby.people.email.verify.deep
+    domain: contacts
+    capability: people.email.verify.deep
+    platform: people
+    scope: any_account
+    method: POST
+    path: /validate_bulk_emails/deep/
+    name: Submit deep email verification
+    summary: Queue addresses for 72-hour verification based on observed delivery behavior.
+    platform_blocked: "Shared-key bulk reservation and body-carried task ownership are unavailable; connect your own Scrubby key."
+    input:
+      bodyType: json
+      body:
+        email: {type: "array[string]", required: true, min: 1, example: [info@scrubby.io]}
+      note: First results arrive after about 24 hours and final results after 72 hours. BYOK-only because the provider publishes no batch maximum.
+    test_request: {body: {email: [info@scrubby.io]}}
+    cost:
+      type: per_result
+      value: 3
+      currency: credit
+      per: 1
+      unit: record
+      source: observed
+      source_url: https://scrubby.io/pricing/
+      checked: '2026-09-16'
+      confidence: verified
+      note: Three credits per address. Live submission reported credits_used=3 for one input.
+    verified: '2026-09-16'
+    example_response: examples/scrubby.people.email.verify.deep.json
+    docs_url: https://docs.scrubby.io/
+
+  - id: scrubby.people.email.verify.deep.results
+    kind: utility
+    capability: people.email.verify.deep.results
+    platform: people
+    scope: any_account
+    method: POST
+    path: /fetch_bulk_results/deep
+    name: Fetch deep verification results
+    summary: Read the 24-, 48-, and 72-hour result windows for a deep batch.
+    platform_blocked: "Shared-key body-carried task ownership is unavailable; connect your own Scrubby key."
+    input:
+      bodyType: json
+      body:
+        identifier: {type: string, required: true, example: 2fbf182d25594091a2ab66a37bbe9f4d}
+      note: Stop polling when status is completed. The live processing response requested a 259,200-second retry.
+    test_request: {body: {identifier: 2fbf182d25594091a2ab66a37bbe9f4d}}
+    cost: {type: free, value: 0, currency: USD, unit: call, source: docs, source_url: https://docs.scrubby.io/, checked: '2026-09-16', confidence: documented, note: Scrubby prices deep verification when the batch is submitted; result polling reports no charge field.}
+    verified: '2026-09-16'
+    example_response: examples/scrubby.people.email.verify.deep.results.json
+    docs_url: https://docs.scrubby.io/

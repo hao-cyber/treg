@@ -127,6 +127,10 @@ sources:
   - src/treg/catalog/dataforseo.yaml
   - src/treg/catalog/dataforseo.extended.yaml
   - tests/test_dataforseo_constraints.py
+  - src/treg/catalog/scrapecreators.yaml
+  - src/treg/catalog/scrapecreators.extended.yaml
+  - src/treg/catalog/serpapi.yaml
+  - src/treg/catalog/serpapi.extended.yaml
   - src/treg/catalog/diffbot.yaml
   - src/treg/catalog/diffbot.extended.yaml
   - src/treg/catalog/tikhub.extended.yaml
@@ -180,7 +184,47 @@ related:
 
 # Endpoint catalog — platform-grouped operations per provider
 
+LimaData adds all 24 Basic v2 operations. Fifteen fixed, synchronous operations can use the shared
+key; variable, 404-billed, and account-scoped batch operations require a team's own key. Six
+fixture-verified adapters join existing routing and Enrich Arena contracts. See
+[LimaData](limadata.md) for the full boundary and live evidence.
+
+## BounceBan email verification (2026-09-16)
+
+BounceBan adds nine tools across standard single verification, BYOK waterfall verification, BYOK
+single/bulk lifecycle reads, JSON bulk submission, and account usage. Only the standard single tool
+is platform eligible. It has a fixed observed cost of one credit, priced at the supplied acquisition
+rate of $0.004, and uses `per_call` so an accepted `status=verifying` submission is charged while a
+rejected HTTP 400 request releases its hold. Waterfall retries, conditional zero-credit catch-all
+results, bulk refunds, and task ownership make the other lifecycle operations unsafe for a shared
+key, so they remain BYOK only.
+
+The verified adapter adds only the standard endpoint to `treg.people.email.verify`; routing and
+Arena discover it from that adapter. Multipart upload, destructive bulk deletion, and the separately
+funded Check API are not catalog tools. See [BounceBan](bounceban.md) for the endpoint evidence,
+credential shape, capacity policy, and exclusions.
+
+## ZeroBounce email verification (2026-09-17)
+
+ZeroBounce adds single email validation plus BYOK-only credit and usage reads. Single validation is
+the only platform-eligible tool. Its one-credit `per_success` price uses the supplied $69 / 5,000
+replacement rate. The verified adapter adds it to `treg.people.email.verify`: unknown is a free
+routed miss, while invalid and risk verdicts remain answers. Batch is excluded because live tests
+showed that it needs the key in its JSON body, which the faithful relay does not rewrite. File,
+state-changing, and ambiguous-price operations are also outside the safe first surface. See
+[ZeroBounce](zerobounce.md) for the inventory and evidence.
+
+MoltSets adds 17 verified data tools: nine single-result shared-plan offers and eight BYOK-only
+variable, batch, or dual-meter tools. See [MoltSets](moltsets.md) for the boundary and evidence.
+
 Sumble adds the full v9 surface with verified platform operations and explicit BYOK restrictions. See [Sumble](sumble.md) for schemas, pricing rules, routing and live evidence.
+
+GetLeads.io adds 12 direct contact-data tools. Every tool accepts BYOK or a $0 platform trial with
+five successful credit-using calls per team per day; its two free discovery tools do not consume
+that allowance. The caller controls provider-valid page limits and batch
+sizes; the allowance counts calls rather than returned records or upstream credits. Internal
+account routes, stateful exports and monitoring are excluded. See [GetLeads.io](getleadsio.md) for
+the boundary and evidence.
 
 ## Financial Datasets v1 and v2 (2026-09-15)
 
@@ -426,7 +470,9 @@ bound — the ChatGPT ads/shopping include family and the Google AI Overview fla
 top-level `state` body field is a generic `cost.modifiers` rider, and the header settles the exact
 charge. The header is absent on cloro's free routes and on a failed extraction, which it does not
 bill, so an absent header settles as unreported rather than as zero. The `cost.modifiers` reserve
-path is open to any credit-priced provider with a fx.yaml rate, not only Aviato. Aviato's
+path is open to any credit-priced provider with a fx.yaml rate, not only Aviato. AI Ark is the
+third header-reporting provider: its exact `X-Credit` debit is negative, and `_CREDIT_HEADERS`
+declares an explicit -1 multiplier instead of treating every negative number as a charge. Aviato's
 preview calls reserve zero; observed email/rescrape add-ons are declared in each endpoint's generic
 `cost.modifiers` map and derived from request flags; synchronous bulk
 calls reserve per lookup and settle per returned successful record. Simple people search reserves
@@ -641,7 +687,8 @@ endpoints:
 `call_template` recognizes `format: binary` on body fields (including array items) and emits CLI
 `--upload` arguments for multipart files and accompanying required fields. File paths remain
 `@/path/to/file` placeholders for the caller to replace; they are never JSON body values. This is
-shared catalog presentation behavior, not a provider-specific relay rewrite.
+shared catalog presentation behavior, not a provider-specific relay rewrite. Generated GET commands
+omit request bodies, including multipart files, because clients and proxies may discard them.
 
 An operation that needs a fresh upload, task ID or destructive setup must not use a placeholder
 `test_request` to qualify for `verified`. Keep manual evidence in the provider's context fragment
@@ -1053,9 +1100,10 @@ billable, the recovery report): architecture/money.md.
 A second treg-set kind, **`kind: treg_trial`**, prices a provider at exactly **$0** with a
 `trial_calls_per_team_day` allowance as data beside the zero: a capped taste served on treg's own
 FREE-tier key. The allowance is what makes $0 honest — at zero the price gives no brake, so the cap
-is the congestion control (`api._enforce_trial_allowance`, per team per UTC day, successes only,
-fail-closed). `cost_view` attaches the allowance to every $0 it serves, because a bare $0.00 reads
-as unlimited. The validator refuses a non-zero "trial" and a zero with no allowance.
+is the congestion control (`_enforce_trial_allowance`, per team per UTC day, successful platform
+calls with a non-free catalog cost only, fail-closed). Free endpoints, failed calls and BYOK calls
+do not consume it. `cost_view` attaches the allowance to every $0 it serves, because a bare $0.00
+reads as unlimited. The validator refuses a non-zero "trial" and a zero with no allowance.
 
 Each `credit_rates_usd` / `unit_rates_usd` entry carries `usd` plus the `basis`/`source`/`checked` that justify it —
 the cheapest PUBLICLY listed tier (plan price ÷ credits included), so the served figure is an upper
@@ -1506,7 +1554,34 @@ back as per-task status `40000` ("You can set only one task at a time") and `$0`
 the provider `limits` line "up to 100 tasks per POST array", so agents batched domains. The
 fix is documentation only — `input.note` and `limits` name the single-task cap; multi-target
 work is a `bulk_*` live route (many targets *inside* one task), e.g. `dataforseo.web.url.metrics`
-(`/backlinks/bulk_ranks/live`). Do not auto-split a multi-task array into billed calls.
+(`/backlinks/bulk_ranks/live`). Feedback #94: `dataforseo.x.serp-google-ai-mode-live-advanced`
+(`/serp/google/ai_mode/live/advanced`) kept the generic extended-catalog note "ARRAY of task
+objects — one object per task", so agents batched keywords and got HTTP 200 with the first
+task OK and per-task 40000 on the rest. That endpoint's `input.note` now names the single-task
+cap and the 40000; settlement is unchanged. Do not auto-split a multi-task array into billed
+calls. Feedback #141 (catalog): the four LLM-responses Live routes
+(`dataforseo.x.ai-optimization-{chat-gpt,claude,gemini,perplexity}-llm-responses-live`)
+reused the same generic extended note; extra tasks return the same 40000. Their `input.note`
+now names the single-task cap. Settlement and the free-vs-charge half of #141 are unchanged
+here. Enforced by `test_dataforseo_backlinks_summary_is_single_task`,
+`test_google_ai_mode_live_documents_single_task_constraint`,
+`test_llm_responses_live_documents_single_task_constraint`,
+`test_catalog_get_dataforseo_ai_mode_live_names_the_single_task_limit` and
+`test_catalog_get_dataforseo_claude_llm_responses_live_names_working_model`.
+
+### DataForSEO Claude LLM Responses `model_name` is not a stable alias
+
+Vendor docs and the ingested example advertised `claude-opus-4-0` and implied bare aliases
+(`claude`, `claude-sonnet`, `claude-opus`) resolve to the latest version. A live POST with
+those values returns HTTP 200 + task status `40501 Invalid Field: 'model_name'` and `$0`.
+Feedback #358: `dataforseo.x.ai-optimization-claude-llm-responses-live` shipped that
+example and stored the 40501 body as `example_response`. The catalog example and
+`test_request` now use a currently accepted name (`claude-sonnet-4-5`); `model_name.note`
+names 40501 and the Models GET. The failed example file is removed rather than advertised
+as a success — do not invent a success payload. Allowed names change over time; list them
+via `https://docs.dataforseo.com/v3/ai_optimization/claude/llm_responses/models/`. Cost
+fields are unchanged. Enforced by `test_claude_llm_responses_live_documents_working_model`
+and `test_catalog_get_dataforseo_claude_llm_responses_live_names_working_model`.
 
 ### DataForSEO Google Trends explore/live rejects `item_types`
 
@@ -1534,6 +1609,79 @@ The catalog field note (and `input.note`) now require `enable_browser_rendering=
 JS-only audits omit `browser_preset`. Settlement is unchanged. Enforced by
 `test_instant_pages_browser_preset_requires_browser_rendering` and
 `test_catalog_get_dataforseo_page_audit_names_browser_preset_dependency`.
+
+### DataForSEO related_keywords/live rejects `order_by` and `filters`
+
+Vendor Labs docs still list `order_by` and `filters` on
+`/dataforseo_labs/google/related_keywords/live`. A live POST with either field
+returns HTTP 200 + task status `40501 Invalid Field` and `$0`. Feedback #54
+(`order_by`) / #439 (`filters`): `dataforseo.google.keywords.ideas` advertised
+them as optional task fields, so agents sent them. The catalog omits both;
+`input.note` says not to send them. Sibling Labs `ranked_keywords` still
+accepts both. Settlement is unchanged. Enforced by
+`test_dataforseo_related_keywords_does_not_advertise_order_by` and
+`test_catalog_get_dataforseo_related_keywords_omits_order_by`.
+
+### DataForSEO LLM Mentions `target` is one AND-combined filter
+
+DataForSEO's LLM Mentions live routes take a `target` array of up to 10 domain/keyword
+entities. Upstream AND-combines them into one filter / one metrics series; it does not
+return one series per brand. Official docs
+(https://docs.dataforseo.com/v3/ai_optimization/llm_mentions/historical/live/) show
+exclude-wikipedia + keyword bmw as a filter combo. Feedback #218:
+`dataforseo.x.ai-optimization-llm-mentions-historical-live` (and 13 sibling
+single-target llm-mentions routes) advertised "up to 10 entities" without AND
+semantics, so agents sent many brands and got one series of zeros. Catalog-only:
+each `target.note` now names AND-combined / one series, and points brand comparison
+at `dataforseo.x.ai-optimization-llm-mentions-multi-target-metrics-live` (`targets`
+with keys) or one call per brand. The wikipedia+bmw `call_template` example is
+unchanged. Settlement is unchanged. Enforced by
+`test_llm_mentions_target_is_and_combined_filter` and
+`test_catalog_get_dataforseo_llm_mentions_historical_names_and_semantics`.
+
+### DataForSEO LLM Mentions multi-target `targets` is 2–10 keyed sets
+
+DataForSEO's LLM Mentions multi-target live route takes a `targets` array of keyed
+comparison sets. Official docs
+(https://docs.dataforseo.com/v3/ai_optimization/llm_mentions/multi_target_metrics/live/)
+say between 2 and 10 target sets, each with its `key`; each nested `target` can
+contain up to 10 domain/keyword entities; requests need at least one include
+filter. A live POST with 14 keys returns HTTP 200 + task status `40501`
+("The number of 'targets' items must be between 2 and 10.") and `$0`.
+Feedback #490: `dataforseo.x.ai-optimization-llm-mentions-multi-target-metrics-live`
+advertised the 4-key example without the length bound, so agents sent 14
+targets. Catalog-only: `targets.note` now names the 2–10 bound and 40501.
+The live route returns a rolling trailing window, not calendar-month buckets,
+and identical calls can vary; monthly series belong on
+`dataforseo.x.ai-optimization-llm-mentions-historical-live`. The 4-key
+example is unchanged. Settlement is unchanged. Enforced by
+`test_llm_mentions_multi_target_targets_bound` and
+`test_catalog_get_dataforseo_llm_mentions_multi_target_names_targets_bound`.
+
+### ScrapeCreators Instagram reels search `date_posted`
+
+ScrapeCreators' OpenAPI for `GET /v2/instagram/reels/search` restricts `date_posted` to
+`last-week`, `last-month`, and `last-year`. Hour and day windows are not supported because
+Google does not index Instagram reels reliably in those windows. Feedback #381:
+`scrapecreators.x.v2-instagram-reels-search` advertised `example: last-hour` with no enum,
+so agents sent an invalid filter. Catalog-only: the field now names that three-value enum
+and example `last-week`. Sibling `date_posted` fields (Google search, LinkedIn posts) keep
+their own windows. Enforced by `test_scrapecreators_instagram_reels_search_date_posted_enum`
+and `test_catalog_get_scrapecreators_instagram_reels_search_date_posted`.
+
+### SerpApi Google Trends `data_type` query cardinality
+
+SerpApi's Google Trends engine (`GET /search?engine=google_trends`) accepts five `data_type`
+values, but not with the same `q` cardinality. `TIMESERIES` (default) accepts single or
+multiple queries; `GEO_MAP` is compared breakdown by region and **multiple queries only**
+(comma-separated `q`); `GEO_MAP_0` is interest by region for a **single** query;
+`RELATED_TOPICS` and `RELATED_QUERIES` are single-query only. A single keyword with
+`GEO_MAP` returns HTTP 400 ("change data_type to one that supports a single query").
+Feedback #440: `serpapi.x.google-trends` listed the five values without those constraints,
+so agents sent `GEO_MAP` with one term. Catalog-only: `data_type.note` now names the
+single vs multiple-query rule; all five values remain valid. Settlement is unchanged.
+Enforced by `test_serpapi_google_trends_data_type_names_geo_map_cardinality` and
+`test_catalog_get_serpapi_google_trends_data_type_cardinality`.
 
 ## Choosing between providers (`domain/catalog/stats.py`)
 

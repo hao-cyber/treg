@@ -1170,6 +1170,24 @@ def test_activity_shows_agent_name_with_owner_badge_not_internal_identity():
     assert "{{a.api_key_name}}<span v-if=\"a.api_key_prefix\"" in INDEX
 
 
+def test_activity_feed_marks_cached_calls_without_changing_the_charge():
+    feed = INDEX[INDEX.index('<template v-if="actTab===\'feed\'">') :]
+    start = feed.index('<tr v-for="a in activityShown"')
+    row = feed[start : feed.index("</tr>", start)]
+    assert "{{a.cost!=null?money(a.cost):'—'}}" in row
+    assert 'v-if="a.cached" class="chip cached"' in row
+    assert "Served from treg's archive instead of calling the provider." in row
+    assert row.index("{{a.cost!=null?money(a.cost):'—'}}") < row.index('v-if="a.cached"')
+    assert ".chip.cached{" in INDEX and "background:var(--panel2)" in INDEX
+
+
+def test_activity_feed_summarizes_cached_calls_in_the_loaded_window():
+    assert 'v-if="activityCachedCount" class="sub"' in INDEX
+    assert "{{activityCachedCount}} of {{activityCallCount}} loaded" in INDEX
+    assert "activityCallCount(){ return this.activityRows.filter(a=>a.kind==='call').length; }" in INDEX
+    assert "activityCachedCount(){ return this.activityRows.filter(a=>a.kind==='call' && a.cached).length; }" in INDEX
+
+
 def test_agent_creation_requires_explicit_tool_scope_and_default_key_has_disabled_state():
     assert 'value="all" v-model="agentAccessMode"' in INDEX
     assert 'value="choose" v-model="agentAccessMode"' in INDEX

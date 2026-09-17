@@ -130,6 +130,7 @@ _CONTROL_ROUTE_KEYS: frozenset[RouteKey] = frozenset({
     ('/vendor-listing', ('GET',), 'vendor_listing_md'),
     ('/integrate.md', ('GET',), 'integrate_md'),
     ('/skill.md', ('GET',), 'skill_md'),
+    ('/skills/ugc/SKILL.md', ('GET',), 'make_ugc_skill_md'),
     ('/feedback.md', ('GET',), 'feedback_md'),
     ('/favicon.ico', ('GET',), 'favicon'),
     ('/favicon.svg', ('GET',), 'favicon'),
@@ -148,6 +149,7 @@ _CONTROL_ROUTE_KEYS: frozenset[RouteKey] = frozenset({
     ('/fable', ('GET',), 'fable_page'),
     ('/astra', ('GET',), 'astra_page'),
     ('/gpt6', ('GET',), 'gpt6_page'),
+    ('/ugc', ('GET',), 'ugc_page'),
     ('/people-search', ('GET',), 'people_search_page'),
     ('/usecase.css', ('GET',), 'usecase_css'),
     ('/oauth/register', ('POST',), 'oauth_register'),
@@ -160,6 +162,7 @@ _CONTROL_ROUTE_KEYS: frozenset[RouteKey] = frozenset({
     ('/.well-known/openai-apps-challenge', ('GET',), 'openai_apps_challenge'),
     ('/.well-known/skills/index.json', ('GET',), 'well_known_skills_index'),
     ('/.well-known/skills/treg/SKILL.md', ('GET',), 'well_known_skill_md'),
+    ('/.well-known/skills/make-ugc/SKILL.md', ('GET',), 'well_known_make_ugc_md'),
     ('/connect-demo', ('GET',), 'connect_demo_page'),
     ('/connect-demo/callback', ('GET',), 'connect_demo_callback'),
     ('/help', ('GET',), 'support_page'),
@@ -217,6 +220,7 @@ _CONTROL_ROUTE_KEYS: frozenset[RouteKey] = frozenset({
     ('/orgs/{org_id}/members/{user_id}', ('PATCH',), 'set_member_role'),
     ('/orgs/{org_id}/leave', ('POST',), 'leave_org'),
     ('/orgs/{org_id}', ('DELETE',), 'delete_org'),
+    ('/orgs/{org_id}', ('PATCH',), 'rename_org'),
     ('/orgs/{org_id}/public-token', ('POST',), 'create_public_token'),
     ('/orgs/{org_id}/public-token', ('DELETE',), 'delete_public_token'),
     ('/orgs/{org_id}/agents', ('POST',), 'create_agent'),
@@ -565,6 +569,7 @@ def _lifespan(role: AppRole):
             if mcp_reader_bound:
                 _mcp.configure_endpoint_observation_reader(endpoint_observations)
             fault_handler = analytics.install_fault_handler()
+            analytics.capture_service_started(role)
             try:
                 if role == "control" or _mcp is None:
                     yield

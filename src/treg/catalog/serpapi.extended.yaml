@@ -169,7 +169,7 @@ endpoints:
       data_type:
         type: string
         required: false
-        note: TIMESERIES (default) | GEO_MAP | GEO_MAP_0 | RELATED_TOPICS | RELATED_QUERIES
+        note: 'TIMESERIES (default; single or multiple queries) | GEO_MAP (compared breakdown by region; multiple comma-separated q only) | GEO_MAP_0 (interest by region; single query only) | RELATED_TOPICS (single query only) | RELATED_QUERIES (single query only)'
         example: TIMESERIES
       geo:
         type: string
@@ -181,7 +181,7 @@ endpoints:
         required: false
         note: e.g. "today 12-m", "now 7-d"
         example: today 12-m
-    note: 'result key depends on data_type: interest_over_time / compared_breakdown_by_region / interest_by_region / related_topics / related_queries.'
+    note: 'result key depends on data_type: TIMESERIES interest_over_time (single or multiple q); GEO_MAP compared_breakdown_by_region (multiple q only); GEO_MAP_0 interest_by_region (single q); RELATED_TOPICS related_topics (single q); RELATED_QUERIES related_queries (single q).'
   cost:
     type: per_success
     value: 0.015

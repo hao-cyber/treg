@@ -34,6 +34,10 @@ class Org(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
     slug: str = Field(index=True, unique=True)
+    # The slug before the last rename. Signed team keys, `~/.treg` and MCP pins carry the slug, so
+    # the old one keeps resolving (see access._resolve_org) instead of revoking every copied key.
+    # ponytail: one alias only; a second rename overwrites it. An alias table if that ever bites.
+    previous_slug: str | None = Field(default=None, index=True)
     suspended: bool = Field(default=False)  # a suspended org's members are locked out (403)
     demo: bool = Field(default=False)  # a sandbox team seeded by onboarding — labeled + one-click removable
     # A team whose token is published (e.g. on the landing page): non-admin members are locked to
@@ -1358,7 +1362,7 @@ class CapacityPolicy(SQLModel, table=True):
     """
 
     provider: str = Field(primary_key=True)
-    capacity_type: str = Field(default="unknown")  # cash | credits | requests | monthly_quota | subscription | unknown
+    capacity_type: str = Field(default="unknown")  # cash | credits | requests | monthly_quota | rolling_quota | subscription | unknown
     source: str = Field(default="none")             # api | headers | calculated | manual | none
     funding_mode: str = Field(default="unknown")    # auto_recharge | auto_upgrade | manual | quota_reset | unknown
     auto_funding_enabled: bool = Field(default=False)
@@ -1460,10 +1464,15 @@ class ArchiveKey(SQLModel, table=True):
     refresh worker need about this question: when it was last fetched, how it has changed across
     refetches, how often callers ask (heat), and which JSON paths turned out to be noise.
 
-    **Scoped to the platform, not to an org.** Only metered platform-tier calls are recorded (the
-    module docstring's gate 3): those run on treg's own vendor account, so the answer belongs to
-    the platform and one team's fetch may warm another team's hit. Own-key responses never enter
-    this table — that is the privacy line, drawn at write time, not filtered at read time.
+    **Scoped by the key itself.** Every catalog answer the policy allows is recorded, whichever
+    credential made the call, but WHOSE question it is (`archive.sharing`) is folded into the
+    key hash: a platform-key answer is public and one team's fetch may warm another team's hit;
+    an own-credential answer lives under an org-scoped key (or a connection-scoped one on an
+    `own_account` endpoint) that nobody else ever computes, and reaches the public key only where
+    the endpoint declares `cache.sharing: public`. `scope` names that kind of key ("org", "conn",
+    NULL = public, including every key from before the column) so the refresh worker skips the
+    private ones. `ArchiveKeyOrg` remembers which teams have paid for which question so a repeat
+    hit can be priced.
 
     Timer state is AIMD (grow slowly on stability, shrink fast on change): `ttl_s` is the current
     per-key timer, adjusted by the learner on every refetch outcome. `change_seen` / `stable_seen`
@@ -1508,6 +1517,9 @@ class ArchiveKey(SQLModel, table=True):
     result_snapshot_id: int | None = Field(default=None)
     # Detect writes from an older binary that did not maintain the result decision.
     result_observed_version: int | None = Field(default=None)
+    # "org" | "conn" for a private key (see archive.scope_tags); NULL = public. Declared LAST
+    # (migration 0039).
+    scope: str | None = Field(default=None)
 
 
 class ArchiveSnapshot(SQLModel, table=True):
@@ -1555,6 +1567,31 @@ class ArchiveSnapshot(SQLModel, table=True):
 
     # NULL is a legacy DB row. R2 objects are addressed directly by content_hash.
     body_storage: str | None = Field(default=None)
+    # The team whose OWN credential fetched this answer; NULL when treg's platform key did.
+    # Provenance for the admin views - what confines the answer is the KEY's scope, not this
+    # column. Declared LAST (migration 0039).
+    origin_org_id: int | None = Field(default=None)
+
+
+class ArchiveKeyOrg(SQLModel, table=True):
+    """Which teams have paid for which archived question - the repeat-hit pricing ledger's index.
+
+    One row per (org, key): written inside the metered settle transaction the first time a team's
+    call on that question is billed, live or hit, and bumped on every later billed call. A hit
+    whose row already exists is a REPEAT for that team and settles at
+    `archive_hit_repeat_price_percent` of the live price (`archive.md`, "Pricing a hit"). Keyed by
+    `key_hash` rather than `ArchiveKey.id` because the hash is known on the call path before the
+    background recorder has created the key row. Written only by `archive`.
+    """
+
+    __table_args__ = (UniqueConstraint("org_id", "key_hash", name="uq_archive_key_org"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    org_id: int = Field(index=True)
+    key_hash: str = Field(index=True)
+    first_call_at: datetime = Field(default_factory=_now)
+    last_call_at: datetime = Field(default_factory=_now)
+    calls: int = Field(default=1)
 
 
 class ArenaRun(SQLModel, table=True):

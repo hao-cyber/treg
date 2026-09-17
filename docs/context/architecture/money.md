@@ -44,6 +44,17 @@ related:
 
 # Money
 
+LimaData converts credits at the assigned account's sustainable automatic-top-up replacement rate:
+$100 for 6,667 credits, rounded up to $0.015 per credit. Only fixed, synchronous prices use the
+shared key. Variable charges, a route billed on HTTP 404, extraction modifiers, and asynchronous
+refunds remain BYOK-only, so no LimaData settlement branch is needed. See [LimaData](limadata.md).
+
+MoltSets is the first real `treg_shared_plan` catalog rate: $0.01 per ordinary successful record on
+the flat $27 subscription. Its verified 5,000-record weekly allowance is conservatively 20,000 per
+four-week month, so the disclosed 2,700-call monthly break-even is 13.5% utilization. Generic
+success-only settlement handles its eligible tools; variable, batch, and dual-meter phone operations
+stay BYOK-only. See [MoltSets](moltsets.md).
+
 A catalogued endpoint can be served on **treg's own key** - no provider signup for the caller - which
 means treg pays the provider and bills the team. That needs a balance, a way to top it up, and a way
 to prove afterwards that the numbers were real. Three modules, one job each:
@@ -438,11 +449,11 @@ command, not a URL.
 
 ## The spend ceiling (`application.call.reserve`)
 
-`_enforce_platform_daily_cap` is a per-org, per-UTC-day ceiling on platform spend, and it is
-**fail-closed** - unlike the per-user call cap, which may let a few extra through under load. A query
-that cannot answer refuses the call, because this one meters *our* money. The balance alone is not
-enough: auto-top-up refills it, so the cap is the blast radius of both a runaway agent and a pricing
-mistake in the catalog.
+`_enforce_platform_daily_cap` is a per-org, per-UTC-day limit on platform spend, applied only when
+one is set (the team's own figure, else the deployment default, which is none). When one applies it
+is **fail-closed** - unlike the per-user call cap, which may let a few extra through under load. A
+query that cannot answer refuses the call. When none applies the ledger is not consulted: the
+prepaid balance and the auto-top-up monthly cap are the bounds on what a team can spend.
 
 An endpoint whose price is unknown never reaches this path at all: `catalog_store.platform_eligible`
 requires `cost_view(...)["usd"] is not None`, so "we don't know" is refused rather than served free -
@@ -475,7 +486,7 @@ Provider-specific calculation stays outside the faithful relay.
 | Evidence | Settlement behavior |
 |---|---|
 | Reported charge | DataForSEO `cost`, ScrapeCreators and Dropleads finder/verifier `credits_charged`, Akta and Dropleads person enrichment `credits_consumed`, Dropleads company `credits.creditsDeducted`, Lusha `billing.creditsCharged`, Exa `costDollars.total`, and Prospeo bulk `total_cost`; credit amounts use the catalog FX rate |
-| Crustdata, cloro | Read the charge from a response HEADER (`_CREDIT_HEADERS`: Crustdata `X-Credits-Used`, cloro `X-Credits-Charged`) using the same FX rate. cloro omits the header on its free routes and on a failed extraction, neither of which it bills, so an absent header settles at the estimate, not at zero |
+| Crustdata, cloro, AI Ark | Read the charge from a response header through `_CREDIT_HEADERS` using the same FX rate. Crustdata `X-Credits-Used` and cloro `X-Credits-Charged` are positive charges; AI Ark `X-Credit` is a negative debit and declares an explicit -1 multiplier. Invalid signs and non-finite values are ignored. cloro omits the header on its free routes and on a failed extraction, neither of which it bills, so an absent header settles at the estimate, not at zero |
 | cloro reserve | `cost.value` is the full-surface `test_request` price (ChatGPT 9, Google SERP 7); the plain call settles lower from the header (verified live 2026-09-07 at the then-Lite rate: reserve 7,200 µ$, settled 5,600, refunded 1,600; at the Hobby rate 3,600 → 2,800, re-verified 2026-09-14). The top-level `state` body field is a `cost.modifiers` rider (+2 credits) reserved through the same generic path Aviato uses, which is open to any credit-priced provider with a FX rate |
 | Apollo | Known empty organization results are free |
 | Tomba domain search | Non-empty pages cost ceil(`meta.pageSize` / 10) credits, even when partially filled; empty `data.emails` is free. Reservation uses requested `limit`, default 10. Missing/malformed page evidence falls back to the estimate. Upstream duplicate discounts are not detected |
@@ -485,6 +496,7 @@ Provider-specific calculation stays outside the faithful relay.
 | TikHub | Honor explicit no-charge prose; an embedded error that says it is charged still costs the estimate |
 | Bright Data | Count delivered JSON-array records or CSV/NDJSON lines; a JSON object containing a status/snapshot handoff has zero records |
 | Aviato | Fixed routes use the estimate; bulk enrichment counts successful records; catalog `settle: base` and `settle: modifiers` release documented-but-unbilled `reserve_only` riders |
+| ZeroBounce | The verified `per_success` adapter treats `status=unknown` as a zero-cost miss; other completed verdicts settle at the frozen one-credit estimate |
 
 Bright Data snapshot downloads are billable per result, including repeat downloads. Gzip or a
 buffer-truncated response falls back to the estimate because the record count is unknown.
@@ -499,7 +511,6 @@ settled 20 rows, moz's one `targets` entry settled 20 quota rows; 2026-09-02: lu
 catalogued FREE, answered 44 contacts for one domain and settled $5.49 from `billing.creditsCharged`
 with nothing reserved). Without any signal it is the
 20-row page, and a settle-at-estimate provider then charges that page.
-
 The page default has no meaning at all when the catalog prices per INPUT entity, and the estimator
 knows the difference since 2026-09-05: a `per_result`/`quota_rows` cost whose `unit` is `target`,
 `domain`, `keyword` or `call` (`resolve._ENTITY_UNITS`) is counted by `_entity_count` — repeated or
@@ -528,6 +539,20 @@ real driver-wrapped SQLSTATE injection after staged writes, checking rollback an
 SQLSTATE injection tests recovery, not the production planner's original deadlock schedule.
 
 The request session must be committed before relay so settlement cannot wait on a connection held by that same request. See [connection discipline](proxy-model.md#connection-discipline-a-call-in-flight-holds-no-db-connection).
+
+## Pricing a cached hit
+
+A hit from the archive is settled through the same hold as a live call; the settle is the only
+place that knows the amount, and the amount differs in exactly one case. Per team and per
+question (`ArchiveKeyOrg`, one row per org and archive key hash, written inside the settle
+transaction): a team's first billed call on a question pays full price whether the vendor or the
+archive answered; from that team's second call on, a hit settles at
+`archive_hit_repeat_price_percent` (default 10) of the live amount — applied to the RAW amount by
+floor division, then the margin as usual. Another team's first hit on the same question is full
+price. The settle entry's meta says `cached: true` and `cache_price_percent`; `X-Treg-Cost-Micro`
+reports what was actually charged. Own-key hits are never metered (non-negotiable 1) and so never
+priced or marked. No new ledger entry kind: the hold is settled for less and the remainder
+released, like any settle below its reserve. Detail in [archive](archive.md#pricing-a-hit).
 
 ## Shared-plan pricing: flat-fee providers, and the rate treg sets
 
@@ -587,12 +612,18 @@ shared plan" - `cost_view`, holds, caps and settlement needed zero changes. What
 
 A third treg-set rate, `kind: treg_trial` (fx.yaml): a provider served on treg's own FREE-tier key
 at exactly $0, capped per team per day (`trial_calls_per_team_day`, enforced by
-`api._enforce_trial_allowance` - successes only, fail-closed, refusal 429 `trial_allowance_reached`
-with a connect-your-own-key hint). The strategy: the pool is the demand probe - a hot pool is the
-buy signal for the provider's commercial tier, negotiated with real volume numbers. Failed calls
-never burn allowance (the same line billability draws), and another org's usage never touches this
-org's pool (tested). At $0 the allowance is the only brake, so the validator refuses a trial entry
-without one.
+`_enforce_trial_allowance` - successful platform calls with a non-free catalog cost only,
+fail-closed, refusal 429 `trial_allowance_reached` with a connect-your-own-key hint). Free discovery
+tools, failed calls and own-key calls never burn the allowance; another org's usage never touches
+this org's pool (tested). The strategy: the pool is the demand probe - a hot pool is the buy signal
+for the provider's commercial tier, negotiated with real volume numbers. At $0 the allowance is the
+only per-team brake, so the validator refuses a trial entry without one.
+
+GetLeads.io uses this contract at five successful credit-using platform calls per team per day; its
+free search-count and filter-discovery tools do not consume the allowance. Its one-time promotional
+database credits have no published USD replacement price, so $0 describes treg's limited trial, not
+a vendor credit valuation. The separately priced Live Leads wallet is not substituted for that
+missing database-credit price.
 
 ## Idempotency and retries
 
@@ -716,12 +747,14 @@ the only budgets and reports it touches are the builder's own. When a token will
 a 403, because otherwise the holder could retag their calls and walk out of their own budget, which is
 the entire point of giving them a scoped token.
 
-### The per-org daily cap has two owners
+### The per-org daily cap is the team's
 
-`budget_policy._effective_daily_cap` takes the minimum of the team's `Org.daily_cap_micro`
-and the deployment's `platform_daily_cap_usd` ceiling (default $500/day). The team can lower its
-limit and inspect it through `GET /orgs/{id}/settings`. A request above the platform ceiling is
-refused, not silently clamped.
+`budget_policy._effective_daily_cap` is the team's `Org.daily_cap_micro` when set, else the
+deployment's `platform_daily_cap_usd` default (0 = no limit, the shipped default). The team sets
+any figure in either direction through `PATCH /orgs/{id}/settings`, 0 meaning "follow the
+default", and inspects it through `GET` (`daily_cap_micro` 0 = no limit, plus
+`platform_default_micro`). Nothing is clamped. The limit was once also a platform ceiling the
+team could not raise; that fired only on funded teams mid-workload and never on abuse, so it went.
 
 The check itself, `ledger.spent_today`, is the most-run query on the platform: every metered call,
 inside the reserve transaction, on an api-pool connection, fail-closed. Its cost is therefore the

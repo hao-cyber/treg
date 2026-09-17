@@ -103,6 +103,14 @@ def test_every_shipped_adapter_round_trips_its_fixture():
     assert ad.is_miss({"email": None}) and not ad.is_miss({"email": "x"})
 
 
+def test_openmart_tools_are_direct_only_not_routed():
+    cat = catalog_store.load()
+    assert "openmart.companies.search" not in cat.adapters
+    assert "openmart.companies.search" not in cat.by_id["treg.companies.search"]["routed_children"]
+    assert cat.platform_eligible(cat.by_id["openmart.companies.search"])
+    assert "openmart.companies.enrich" not in cat.by_id["treg.companies.enrich"]["routed_children"]
+
+
 def test_dropleads_routing_surface_contains_only_verified_single_record_tools():
     catalog = catalog_store.load()
     expected = {
@@ -156,6 +164,92 @@ def test_prospeo_routing_surface_uses_fixed_single_record_modes():
     })
     assert phone_body["enrich_mobile"] is True
     assert phone_body["only_verified_mobile"] is True
+
+
+def test_aiark_routing_surface_uses_verified_bounded_adapters():
+    catalog = catalog_store.load()
+    expected = {
+        "aiark.people.search",
+        "aiark.companies.search",
+        "aiark.people.email.find",
+        "aiark.people.phone.find",
+        "aiark.people.enrich",
+    }
+    assert {eid for eid in expected if catalog.adapters[eid].verified} == expected
+    _, people = catalog.adapters["aiark.people.search"].to_upstream({
+        "company_domain": "example.com",
+    })
+    _, companies = catalog.adapters["aiark.companies.search"].to_upstream({
+        "domain": "example.com",
+    })
+    bounded = {
+        "account": {"domain": {"any": {"include": ["example.com"]}}},
+        "page": 0,
+        "size": 1,
+    }
+    assert people == bounded
+    assert companies == bounded
+
+
+def test_aiark_finders_treat_present_but_empty_outputs_as_misses():
+    catalog = catalog_store.load()
+    email = catalog.adapters["aiark.people.email.find"]
+    phone = catalog.adapters["aiark.people.phone.find"]
+    assert email.is_miss({"data": None})
+    assert email.is_miss({"data": {"email": {"output": []}}})
+    assert not email.is_miss({"data": {"email": {"output": [{
+        "address": "jane@example.com",
+    }]}}})
+    assert phone.is_miss({"data": None})
+    assert phone.is_miss({"data": {"data": [[]]}})
+    assert not phone.is_miss({"data": {"data": [["+15550101000"]]}})
+
+
+def test_limadata_routing_surface_contains_only_its_verified_adapters():
+    catalog = catalog_store.load()
+    expected = {
+        "limadata.people.email.find.name",
+        "limadata.people.email.find.linkedin",
+        "limadata.people.email.verify",
+        "limadata.people.phone.find",
+        "limadata.companies.enrich",
+    }
+    assert {
+        eid for eid, adapter in catalog.adapters.items()
+        if eid.startswith("limadata.") and adapter.verified
+    } == expected
+    assert "limadata.people.email.find.name" in catalog.by_id[
+        "treg.people.email.find"
+    ]["routed_children"]
+    assert "limadata.people.email.verify" in catalog.by_id[
+        "treg.people.email.verify"
+    ]["routed_children"]
+    assert "limadata.people.phone.find" in catalog.by_id[
+        "treg.people.phone.find"
+    ]["routed_children"]
+    assert "limadata.people.enrich" not in catalog.adapters
+    assert "limadata.people.enrich" not in catalog.by_id[
+        "treg.people.enrich"
+    ]["routed_children"]
+
+
+def test_wiza_routing_surface_uses_bounded_single_record_searches():
+    catalog = catalog_store.load()
+    expected = {
+        "wiza.people.search",
+        "wiza.companies.search",
+        "wiza.companies.enrich",
+    }
+    assert {eid for eid in expected if catalog.adapters[eid].verified} == expected
+    _, people_body = catalog.adapters["wiza.people.search"].to_upstream({"title": "Founder"})
+    _, company_body = catalog.adapters["wiza.companies.search"].to_upstream({
+        "technology": "amazon-web-services",
+    })
+    assert people_body == {"filters": {"job_title": [{"v": "Founder", "s": "i"}]}, "size": 1}
+    assert company_body == {
+        "filters": {"technologies": [{"v": "amazon-web-services", "s": "i"}]},
+        "size": 1,
+    }
 
 
 def test_identity_variants_derive_and_never_cross():
@@ -1203,14 +1297,14 @@ def test_every_declared_miss_status_names_its_meaning():
 async def test_lusha_is_the_last_rung_of_the_phone_waterfall_and_settles_on_its_own_bill(clients: AsyncClient, enrichment_on, monkeypatch):
     """Guatemala, 2026-09-03: 7 phones in 44 across tomba/aviato/leadmagic/findymail/leadsforge.
     Lusha's native direct-dial data remains the last rung — dearest per hit (6 credits), so it ranks
-    after Dropleads, Prospeo, and the cheaper providers; a miss is free and a matched profile
+    after AI Ark, Dropleads, Prospeo, and the cheaper providers; a miss is free and a matched profile
     with no number costs the 1-credit search, both read off `billing.creditsCharged`."""
     monkeypatch.setenv("TREG_PLATFORM_KEY_LUSHA", "PLATFORM-LUSHA-KEY")
     monkeypatch.setenv("TREG_PLATFORM_PROVIDERS", "hunter,tomba,leadmagic,leadsforge,findymail,aviato,fiber-ai,lusha")
     get_settings.cache_clear()
     routed = "treg.people.phone.find"
     plan = (await clients.get(f"/catalog/endpoints/{routed}")).json()["routing"]["plan"]
-    assert plan[-1]["endpoint_id"] == "lusha.people.phone.find" and len(plan) == 9, [c["endpoint_id"] for c in plan]
+    assert plan[-1]["endpoint_id"] == "lusha.people.phone.find" and len(plan) == 11, [c["endpoint_id"] for c in plan]
     def misses():
         return {"aviato": [(404, {"message": "Not Found"})], "tomba": [(200, {"data": {"e164_format": None}})],
                 "leadmagic": [(200, {"mobile_number": None, "credits_consumed": 0})],
@@ -1393,6 +1487,147 @@ def test_millionverifier_verdicts(result, valid, miss):
     assert adapter.is_miss(doc) is miss
     assert adapter.is_miss({"result": "error", "error": "invalid_api_key"})
     assert adapter.is_miss({})
+
+
+@pytest.mark.parametrize("result,valid", [
+    ("deliverable", True),
+    ("risky", False),
+    ("undeliverable", False),
+    ("unknown", False),
+])
+def test_bounceban_verdicts_join_existing_email_verification_route(result, valid):
+    cat = catalog_store.load()
+    eid = "bounceban.people.email.verify"
+    routed = cat.by_id["treg.people.email.verify"]["routed_children"]
+    assert eid in routed
+    assert "bounceban.people.email.verify.waterfall" not in routed
+    assert cat.platform_eligible(cat.by_id[eid])
+    for blocked in (
+        "bounceban.people.email.verify.waterfall",
+        "bounceban.people.email.verify.bulk",
+        "bounceban.people.email.verify.bulk.status",
+        "bounceban.people.email.verify.bulk.emails",
+        "bounceban.people.email.verify.bulk.dump",
+        "bounceban.people.email.verify.bulk.export",
+        "bounceban.account.usage",
+    ):
+        assert not cat.platform_eligible(cat.by_id[blocked])
+    adapter = cat.adapters[eid]
+    assert adapter.verified
+    doc = {"status": "success", "result": result, "score": 99}
+    assert adapter.from_upstream(doc) == {"valid": valid, "status": result, "score": 99}
+    assert not adapter.is_miss(doc)
+    assert adapter.is_miss({"id": "task", "status": "verifying"})
+
+
+def test_zerobounce_verdicts_join_existing_email_verification_route():
+    cat = catalog_store.load()
+    eid = "zerobounce.people.email.verify"
+    assert eid in cat.by_id["treg.people.email.verify"]["routed_children"]
+    assert cat.platform_eligible(cat.by_id[eid])
+    adapter = cat.adapters[eid]
+    assert adapter.verified
+    assert adapter.is_miss({"status": "unknown"})
+    assert adapter.is_miss({})
+    for status, valid in (("valid", True), ("invalid", False), ("catch-all", False),
+                          ("spamtrap", False), ("abuse", False), ("do_not_mail", False)):
+        doc = {"status": status}
+        assert not adapter.is_miss(doc)
+        assert adapter.from_upstream(doc) == {"valid": valid, "status": status}
+
+
+def test_zerobounce_expensive_discovery_tools_stay_out_of_automatic_routing():
+    cat = catalog_store.load()
+    assert "zerobounce.people.email.find" not in cat.by_id["treg.people.email.find"]["routed_children"]
+    assert "zerobounce.people.email.find" not in cat.adapters
+    assert "zerobounce.companies.email_pattern" not in cat.adapters
+
+
+async def test_zerobounce_serves_existing_email_verification_route(clients, monkeypatch):
+    monkeypatch.setenv("TREG_PLATFORM_KEY_ZEROBOUNCE", "PLATFORM-ZEROBOUNCE")
+    monkeypatch.setenv("TREG_PLATFORM_PROVIDERS", "zerobounce")
+    get_settings.cache_clear()
+    seen = []
+    monkeypatch.setattr(call_service, "relay", _relay_by_provider({
+        "zerobounce": [(200, {"status": "valid"})],
+    }, seen))
+    try:
+        response = await clients.post(
+            "/call/treg.people.email.verify", json={"email": "valid@example.com"})
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["output"] == {"valid": True, "status": "valid"}
+        assert body["_treg"]["served_by"] == "zerobounce.people.email.verify"
+        assert [row[0] for row in seen] == ["zerobounce"]
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_bounceban_serves_existing_email_verification_route(clients, monkeypatch):
+    monkeypatch.setenv("TREG_PLATFORM_KEY_BOUNCEBAN", "PLATFORM-BOUNCEBAN")
+    monkeypatch.setenv("TREG_PLATFORM_PROVIDERS", "bounceban")
+    get_settings.cache_clear()
+    seen = []
+    monkeypatch.setattr(call_service, "relay", _relay_by_provider({
+        "bounceban": [(200, {
+            "id": "task", "status": "success", "result": "risky", "score": 62,
+            "credits_consumed": 1, "credits_remaining": 9996,
+        })],
+    }, seen))
+    before = await _balance(clients)
+    response = await clients.post(
+        "/call/treg.people.email.verify", json={"email": "dev@bounceban.com"})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["output"]["valid"] is False
+    assert data["output"]["status"] == "risky"
+    assert data["output"]["score"] == 62
+    assert data["_treg"]["served_by"] == "bounceban.people.email.verify"
+    assert before - await _balance(clients) == 4_000
+    assert [row[0] for row in seen] == ["bounceban"]
+    get_settings.cache_clear()
+
+
+async def test_bounceban_routed_pending_result_is_a_paid_miss_then_falls_through(
+    clients, monkeypatch,
+):
+    monkeypatch.setenv("TREG_PLATFORM_KEY_BOUNCEBAN", "PLATFORM-BOUNCEBAN")
+    monkeypatch.setenv("TREG_PLATFORM_KEY_TOMBA", "PLATFORM-TOMBA-KEY")
+    monkeypatch.setenv("TREG_PLATFORM_KEY_TOMBA_SECRET", "PLATFORM-TOMBA-SECRET")
+    monkeypatch.setenv("TREG_PLATFORM_PROVIDERS", "bounceban,tomba")
+    get_settings.cache_clear()
+    seen = []
+    monkeypatch.setattr(call_service, "relay", _relay_by_provider({
+        "bounceban": [(200, {
+            "id": "task", "status": "verifying", "try_again_at": 1789516800,
+        })],
+        "tomba": [(200, {
+            "data": {"email": {"status": "valid", "score": 99}},
+        })],
+    }, seen))
+
+    before = await _balance(clients)
+    response = await clients.post(
+        "/call/treg.people.email.verify",
+        json={"email": "dev@bounceban.com"},
+        headers={"X-Treg-Route-Prefer": "bounceban,tomba"},
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["_treg"]["served_by"] == "tomba.people.email.verify"
+    assert [attempt["outcome"] for attempt in data["_treg"]["tried"]] == ["miss", "hit"]
+    assert [attempt["charged_micro"] for attempt in data["_treg"]["tried"]] == [4_000, 8_900]
+    assert data["_treg"]["charged_micro"] == 12_900
+    assert before - await _balance(clients) == 12_900
+    assert [row[0] for row in seen] == ["bounceban", "tomba"]
+    await audit.drain()
+    async with session_maker() as db:
+        rows = (await db.execute(select(CallRecord).where(
+            CallRecord.provider == "bounceban"))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].hit is False
+        assert rows[0].cost_charged_micro == 4_000
+    get_settings.cache_clear()
 
 
 async def test_millionverifier_error_falls_through_unbilled(clients, enrichment_on, monkeypatch):

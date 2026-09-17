@@ -36,6 +36,8 @@ pricing_url: https://www.leadsforge.ai/pricing
 endpoints:
   # --- people search (free) ----------------------------------------------------------------------
   - id: leadsforge.people.search
+    cache:
+      ignore_paths: ["cursor"]
     domain: contacts
     capability: people.search
     platform: people
